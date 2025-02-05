@@ -1,3 +1,6 @@
+#define DAC_TEST
+//#define SD_TEST
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,19 +14,18 @@
 #include "driver/spi_master.h"
 #include "driver/spi_common.h"
 #include "driver/gpio.h"
-
-#include "ism330dhcx_reg.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_intr_types.h"
 
+#include "Fusion.h"
+#include "LTC2664_reg.h"
+#include "ism330dhcx_reg.h"
 
 #define EXAMPLE_MAX_CHAR_SIZE    64
 #define MOUNT_POINT "/sdcard"
 #define SAMPLE_PERIOD 0.0048076923076923f
-
-#include "Fusion.h"
 
 #define IMU_HOST            VSPI_HOST
 #define DAC_HOST            HSPI_HOST
@@ -38,32 +40,100 @@
 
 #define BOOT_TIME         10 //ms
 
-
-static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
-                              uint16_t len);
-static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
-                             uint16_t len);
+static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, const uint16_t *data);
+static int32_t IMU_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len);
+static int32_t IMU_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len);
 static void platform_delay(uint32_t ms);
-esp_err_t init_spi_device(spi_host_device_t SPI_CHANNEL, gpio_num_t MISO, gpio_num_t MOSI, gpio_num_t CLK, gpio_num_t CS);
+esp_err_t init_spi_IMU();
+esp_err_t init_spi_DAC();
 void init_ahrs_fusion(void);
-esp_err_t config_spi_device(void);
+esp_err_t config_spi_IMU(void);
 
 static const char TAG[] = "main";
 
 
 stmdev_ctx_t ISM330DHCX_dev_ctx;
+ltcdev_ctx_t LTC2664_dev_ctx;
 static float acceleration_g[3];
 static float angular_rate_dps[3];
 FusionAhrs ahrs;
 
 void app_main(void){
+    esp_err_t err;
+    #if defined DAC_TEST
+    //test dac
+    ESP_LOGI(TAG, "Testing DAC: ");
+    err = init_spi_DAC();
+    ESP_ERROR_CHECK(err);
+    uint16_t n_two_halfV = 0;
+    uint16_t zeroV = 32767;
+    uint16_t p_two_halfV = 65535;
+    while(1){
+        //one second loop, multi step response from DACs go from -2.5V to 0V to 2.5V to 0V, repeat
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &n_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &n_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &n_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &n_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(100);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(100);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &p_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &p_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &p_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &p_two_halfV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(100);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(50);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &zeroV);
+        ESP_ERROR_CHECK(err);
+        platform_delay(100);
+    }
+    
+    #elif defined SD_TEST
+    //test sd card
+    #else
+    //normal operation
+
+
+
+
+
     esp_err_t ret;
-    ret = init_spi_device(IMU_HOST, IMU_PIN_NUM_MISO, IMU_PIN_NUM_MOSI, IMU_PIN_NUM_CLK, IMU_PIN_NUM_CS);
+    ret = init_spi_IMU();
     ESP_ERROR_CHECK(ret);
     init_ahrs_fusion();
-    //ret = config_spi_device();
-    ESP_ERROR_CHECK(ret);
-    ret = init_spi_device(DAC_HOST, DAC_PIN_NUM_MISO, DAC_PIN_NUM_MOSI, DAC_PIN_NUM_CLK, DAC_PIN_NUM_CS);
+    //ret = config_spi_IMU();
     ESP_ERROR_CHECK(ret);
 
 // Options for mounting the filesystem.
@@ -141,31 +211,31 @@ void app_main(void){
     }
     ESP_LOGI(TAG, "Filesystem mounted");
 
-
+    #endif
 }
 
 
 /*
     Initialize the ISM330DHCX_device's SPI bus
 */
-esp_err_t init_spi_device(spi_host_device_t SPI_CHANNEL, gpio_num_t MISO, gpio_num_t MOSI, gpio_num_t CLK, gpio_num_t CS){
+esp_err_t init_spi_IMU(void){
     esp_err_t ret;
 
-    static const char init_spi_TAG[] = "SPI";
-    ESP_LOGI(init_spi_TAG, "Initializing bus SPI%d...", SPI_CHANNEL + 1);
+    static const char init_spi_TAG[] = "IMU";
+    ESP_LOGI(init_spi_TAG, "Initializing bus SPI%d...", IMU_HOST + 1);
 
     spi_bus_config_t *buscfg = malloc(sizeof(spi_bus_config_t)); //save this config in the heap
     memset(buscfg,0xFF,sizeof(spi_bus_config_t)); //disable extra config pins
-    buscfg->miso_io_num = MISO;
-    buscfg->mosi_io_num = MOSI;
-    buscfg->sclk_io_num = CLK;
+    buscfg->miso_io_num = IMU_PIN_NUM_MISO;
+    buscfg->mosi_io_num = IMU_PIN_NUM_MOSI;
+    buscfg->sclk_io_num = IMU_PIN_NUM_CLK;
     buscfg->max_transfer_sz = 7; //limit transfer sz to 7 bytes
     buscfg->flags = 0;
     buscfg->data_io_default_level = 0;
     buscfg->intr_flags = 0;
     buscfg->isr_cpu_id = ESP_INTR_CPU_AFFINITY_AUTO;
 
-    ret = spi_bus_initialize(SPI_CHANNEL, buscfg, SPI_DMA_DISABLED); //initialize the bus using the controller defined in the preamble
+    ret = spi_bus_initialize(IMU_HOST, buscfg, SPI_DMA_DISABLED); //initialize the bus using the controller defined in the preamble
     
     if(ret != 0){ // if we have an error
         return (ret); //cancel any further operation and return
@@ -186,20 +256,20 @@ esp_err_t init_spi_device(spi_host_device_t SPI_CHANNEL, gpio_num_t MISO, gpio_n
     devcfg->cs_ena_posttrans =  0;
     devcfg->clock_speed_hz=     9*1000*1000; //9Mhz
     devcfg->input_delay_ns =    0;
-    devcfg->spics_io_num=       CS;
+    devcfg->spics_io_num=       IMU_PIN_NUM_CS;
     devcfg->flags =             SPI_DEVICE_NO_DUMMY; //disable high freq(>100MHZ) workaround
     devcfg->queue_size=         7;  //queue 7 transactions at most
     devcfg->pre_cb =            NULL; //No callbacks
     devcfg->post_cb =           NULL;
 
-    ret = spi_bus_add_device(SPI_CHANNEL, devcfg, spi);
+    ret = spi_bus_add_device(IMU_HOST, devcfg, spi);
 
     if(ret != 0){ // if we have an error
         return (ret); //cancel any further operation and return
     }
 
-    ISM330DHCX_dev_ctx.write_reg = platform_write;
-    ISM330DHCX_dev_ctx.read_reg = platform_read;
+    ISM330DHCX_dev_ctx.write_reg = IMU_write;
+    ISM330DHCX_dev_ctx.read_reg = IMU_read;
     ISM330DHCX_dev_ctx.mdelay = platform_delay;
     ISM330DHCX_dev_ctx.handle = spi;
 
@@ -208,6 +278,69 @@ esp_err_t init_spi_device(spi_host_device_t SPI_CHANNEL, gpio_num_t MISO, gpio_n
     return(ret);
 
 }
+
+/*
+    Initialize the LTC2664 device's SPI bus
+*/
+esp_err_t init_spi_DAC(void){
+    esp_err_t ret;
+
+    static const char init_spi_TAG[] = "DAC";
+    ESP_LOGI(init_spi_TAG, "Initializing bus SPI%d...", DAC_HOST + 1);
+
+    spi_bus_config_t *buscfg = malloc(sizeof(spi_bus_config_t)); //save this config in the heap
+    memset(buscfg,0xFF,sizeof(spi_bus_config_t)); //disable extra config pins
+    buscfg->miso_io_num = DAC_PIN_NUM_MISO;
+    buscfg->mosi_io_num = DAC_PIN_NUM_MOSI;
+    buscfg->sclk_io_num = DAC_PIN_NUM_CLK;
+    buscfg->max_transfer_sz = 3; //limit transfer sz to 7 bytes
+    buscfg->flags = 0;
+    buscfg->data_io_default_level = 0;
+    buscfg->intr_flags = 0;
+    buscfg->isr_cpu_id = ESP_INTR_CPU_AFFINITY_AUTO;
+
+    ret = spi_bus_initialize(DAC_HOST, buscfg, SPI_DMA_DISABLED); //initialize the bus using the controller defined in the preamble
+    
+    if(ret != 0){ // if we have an error
+        return (ret); //cancel any further operation and return
+    }
+    //else continue setup
+
+    ESP_LOGI(init_spi_TAG, "Init Success. Adding device...");
+    
+    spi_device_handle_t *spi = malloc(sizeof(spi_device_handle_t));
+    spi_device_interface_config_t *devcfg = malloc(sizeof(spi_device_interface_config_t));
+    memset(devcfg,0x00,sizeof(spi_device_interface_config_t));//zero out memory space
+    devcfg->command_bits =      4;//one command bit (R/W)
+    devcfg->address_bits =      4;//seven address bit (register address)
+    devcfg->mode=               3;//Clock high in idle, read on rising edge
+    devcfg->clock_source =      SPI_CLK_SRC_DEFAULT;
+    devcfg->duty_cycle_pos =    128; //50%/50% duty cycle
+    devcfg->cs_ena_pretrans =   0;//CS timed with clock
+    devcfg->cs_ena_posttrans =  0;
+    devcfg->clock_speed_hz=     49*1000*1000; //49Mhz
+    devcfg->input_delay_ns =    0;
+    devcfg->spics_io_num=       DAC_PIN_NUM_CS;
+    devcfg->flags =             SPI_DEVICE_NO_DUMMY; //disable high freq(>100MHZ) workaround
+    devcfg->queue_size=         7;  //queue 7 transactions at most
+    devcfg->pre_cb =            NULL; //No callbacks
+    devcfg->post_cb =           NULL;
+
+    ret = spi_bus_add_device(IMU_HOST, devcfg, spi);
+
+    if(ret != 0){ // if we have an error
+        return (ret); //cancel any further operation and return
+    }
+
+    LTC2664_dev_ctx.write_reg = DAC_write;
+    LTC2664_dev_ctx.handle = spi;
+
+    ESP_LOGI(init_spi_TAG, "Device configured, ready for use");
+
+    return(ret);
+
+}
+
 
 /*
     @brief Initialise the Fusion algorithim and apply necessary settings
@@ -235,7 +368,7 @@ void init_ahrs_fusion(void){
 /*
     @brief configures the ISM330DHCX, checks that device is connected and working. Implements delay at start to allow device boot time. Must be after bus initialized.
 */
-esp_err_t config_spi_device(void){
+esp_err_t config_spi_IMU(void){
     vTaskDelay(BOOT_TIME / portTICK_PERIOD_MS);
     esp_err_t ret;
     uint8_t count = 0;
@@ -300,7 +433,7 @@ static void platform_delay(uint32_t ms)
  * @param  len       number of consecutive register to read
  *
  */
-static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
+static int32_t IMU_read(void *handle, uint8_t reg, uint8_t *bufp,
                              uint16_t len)
 {
     esp_err_t ret;    
@@ -328,7 +461,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
  * @param  len       number of consecutive register to write
  *
  */
-static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
+static int32_t IMU_write(void *handle, uint8_t reg, const uint8_t *bufp,
                               uint16_t len)
 {
     esp_err_t ret;    
@@ -341,6 +474,31 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
     t.flags = 0;   
 
     ret = spi_device_transmit(handle,&t);
+
+    return (int)ret;
+}
+
+/**
+ * @brief Write DAC register
+ * 
+ * @param   handle  pointer to spi device handle
+ * @param   dac     DAC number to write to
+ * @param   command Command to to write
+ * @param   data    pointer to data to write
+ * 
+ * @return  ret     0 = no error
+ */
+static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, const uint16_t *data){
+    esp_err_t ret;
+    spi_transaction_t t;
+    memset( &t, 0x00, sizeof(t) );
+    t.cmd = command;
+    t.addr = dac;
+    t.length = 16;
+    t.tx_buffer = data;
+    t.flags = 0;
+
+    ret = spi_device_transmit(handle, &t);
 
     return (int)ret;
 }
