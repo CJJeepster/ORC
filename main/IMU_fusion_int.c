@@ -215,8 +215,8 @@ void app_main(void){
 }
 
 
-/*
-    Initialize the ISM330DHCX_device's SPI bus
+/**
+    @brief Initialize the ISM330DHCX_device's SPI bus
 */
 esp_err_t init_spi_IMU(void){
     esp_err_t ret;
@@ -279,8 +279,8 @@ esp_err_t init_spi_IMU(void){
 
 }
 
-/*
-    Initialize the LTC2664 device's SPI bus
+/**
+    @brief Initialize the LTC2664 device's SPI bus
 */
 esp_err_t init_spi_DAC(void){
     esp_err_t ret;
@@ -342,7 +342,7 @@ esp_err_t init_spi_DAC(void){
 }
 
 
-/*
+/**
     @brief Initialise the Fusion algorithim and apply necessary settings
 */
 void init_ahrs_fusion(void){
@@ -365,7 +365,7 @@ void init_ahrs_fusion(void){
     //minimum working product rn. 
 }
 
-/*
+/**
     @brief configures the ISM330DHCX, checks that device is connected and working. Implements delay at start to allow device boot time. Must be after bus initialized.
 */
 esp_err_t config_spi_IMU(void){
@@ -423,7 +423,7 @@ static void platform_delay(uint32_t ms)
     vTaskDelay(ms / portTICK_PERIOD_MS);
 }
 
-/*
+/**
  * @brief  Read generic device register (platform dependent)
  *
  * @param  handle    customizable argument. In this examples is used in
@@ -451,7 +451,7 @@ static int32_t IMU_read(void *handle, uint8_t reg, uint8_t *bufp,
     return (int)ret;
 }
 
-/*
+/**
  * @brief  Write generic device register (platform dependent)
  *
  * @param  handle    customizable argument. In this examples is used in
