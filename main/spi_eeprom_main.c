@@ -210,7 +210,7 @@ int32_t ism330dhcx_read_data_polling(spi_device_handle_t *spi){
       memset(data_raw_angular_rate, 0x00, 3 * sizeof(int16_t));
       ism330dhcx_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
       angular_rate_mdps[0] = (float_t)data_raw_angular_rate[0] * 0.0175f;
-        //ism330dhcx_from_fs250dps_to_mdps(data_raw_angular_rate[0]);
+        ism330dhcx_from_fs250dps_to_mdps(data_raw_angular_rate[0]);
       angular_rate_mdps[1] = (float_t)data_raw_angular_rate[1] * 0.0175f;
         //ism330dhcx_from_fs250dps_to_mdps(data_raw_angular_rate[1]);
       angular_rate_mdps[2] = (float_t)data_raw_angular_rate[2] * 0.0175f;

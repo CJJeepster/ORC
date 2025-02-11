@@ -1,4 +1,4 @@
-#define DAC_TEST
+//#define DAC_TEST
 //#define SD_TEST
 
 #include <stdio.h>
@@ -29,14 +29,17 @@
 
 #define IMU_HOST            VSPI_HOST
 #define DAC_HOST            HSPI_HOST
-#define IMU_PIN_NUM_MISO    19
-#define IMU_PIN_NUM_MOSI    23
-#define IMU_PIN_NUM_CLK     18
-#define IMU_PIN_NUM_CS      5
+#define IMU_PIN_NUM_MISO    13//19
+#define IMU_PIN_NUM_MOSI    12//23
+#define IMU_PIN_NUM_CLK     14//18
+#define IMU_PIN_NUM_CS      15//5
+#define IMU_PIN_INT1        17//32
 #define DAC_PIN_NUM_MISO    -1
 #define DAC_PIN_NUM_MOSI    27
 #define DAC_PIN_NUM_CLK     26
 #define DAC_PIN_NUM_CS      25
+
+#define GPIO_INT_PIN_SEL ((1ULL<<IMU_PIN_INT1))
 
 #define BOOT_TIME         10 //ms
 
@@ -49,16 +52,63 @@ esp_err_t init_spi_DAC();
 void init_ahrs_fusion(void);
 esp_err_t config_spi_IMU(void);
 
-static const char TAG[] = "main";
-
-
 stmdev_ctx_t ISM330DHCX_dev_ctx;
+spi_device_handle_t IMU_spi;
 ltcdev_ctx_t LTC2664_dev_ctx;
-static float acceleration_g[3];
-static float angular_rate_dps[3];
 FusionAhrs ahrs;
+FusionEuler euler;
+float_t float_time;
+QueueHandle_t clicker;
+
+
+//IMU interupt routine (does all the shiz but writing to SD)
+static void IRAM_ATTR imu_isr_handler(void* arg){
+    int8_t test = 123;
+    xQueueSendFromISR(clicker, &test,0);
+    /*//when IMU_PIN_INT1 rising edge
+    static int16_t data_raw_acceleration[3];
+    static int16_t data_raw_angular_rate[3];
+    static float_t acceleration_g[3];
+    static float_t angular_rate_dps[3];
+    //read time stamp
+    uint32_t time;
+    ism330dhcx_timestamp_raw_get(&ISM330DHCX_dev_ctx,&time);
+    ism330dhcx_timestamp_rst(&ISM330DHCX_dev_ctx);
+    float_time = time * 0.000000025f;
+    //reset time stamp
+    //read accel
+    memset(data_raw_acceleration, 0x00, 3 * sizeof(int16_t));
+    ism330dhcx_acceleration_raw_get(&ISM330DHCX_dev_ctx, data_raw_acceleration);
+    //convert to g for use in Fusion 
+    //uses full scale of 2 g for int to float conversion
+    acceleration_g[0] = (float_t)data_raw_acceleration[0] * 0.000061f;
+    acceleration_g[1] = (float_t)data_raw_acceleration[1] * 0.000061f;
+    acceleration_g[2] = (float_t)data_raw_acceleration[2] * 0.000061f;
+    //read gyro
+    memset(data_raw_angular_rate, 0x00, 3 * sizeof(int16_t));
+    ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
+    //convert to dps for us in Fusion
+    //uses full scale of 500dps for int to float conversion
+    angular_rate_dps[0] = (float_t)data_raw_angular_rate[0] * 0.0175f;
+    angular_rate_dps[1] = (float_t)data_raw_angular_rate[1] * 0.0175f;
+    angular_rate_dps[2] = (float_t)data_raw_angular_rate[2] * 0.0175f;
+    //fusion
+    const FusionVector gyroscope = {{angular_rate_dps[0],angular_rate_dps[1],angular_rate_dps[2]}};
+    const FusionVector accelerometer = {{acceleration_g[0],acceleration_g[1],acceleration_g[2]}};
+    FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, float_time);
+    euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
+    //printf("Roll %0.3f, Pitch %0.3f, Yaw %0.3f, Elapsed Time %f\n", euler.angle.roll, euler.angle.pitch, euler.angle.yaw, float_time);
+    //pid
+    //transform
+    //write to dac and internal buffer
+    */
+}
+
+
+//need to add timestamp enable
 
 void app_main(void){
+    static const char TAG[] = "Main";
     esp_err_t err;
     #if defined DAC_TEST
     //test dac
@@ -126,90 +176,55 @@ void app_main(void){
     //normal operation
 
 
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_POSEDGE;
+    //bit mask of the pins, use GPIO4/5 here
+    io_conf.pin_bit_mask = GPIO_INT_PIN_SEL;
+    //set as input mode
+    io_conf.mode = GPIO_MODE_INPUT;
+    //enable pull-up mode
+    io_conf.pull_up_en = 0;
+    io_conf.pull_down_en = 1;
+    gpio_config(&io_conf);
 
-
-
-    esp_err_t ret;
-    ret = init_spi_IMU();
-    ESP_ERROR_CHECK(ret);
+    err = init_spi_IMU();
+    ESP_ERROR_CHECK(err);
     init_ahrs_fusion();
-    //ret = config_spi_IMU();
-    ESP_ERROR_CHECK(ret);
 
-// Options for mounting the filesystem.
-    // If format_if_mount_failed is set to true, SD card will be partitioned and
-    // formatted in case when mounting fails.
-    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed = true,
-        .max_files = 5,
-        .allocation_unit_size = 16 * 1024
-    };
-    sdmmc_card_t *card;
-    const char mount_point[] = MOUNT_POINT;
-    ESP_LOGI(TAG, "Initializing SD card");
+    err = config_spi_IMU();
+    ESP_ERROR_CHECK(err);
 
-    // Use settings defined above to initialize SD card and mount FAT filesystem.
-    // Note: esp_vfs_fat_sdmmc/sdspi_mount is all-in-one convenience functions.
-    // Please check its source code and implement error recovery when developing
-    // production applications.
 
-    ESP_LOGI(TAG, "Using SDMMC peripheral");
-        const gpio_config_t mtck_d3 = {
-        .pin_bit_mask = (1ULL << GPIO_NUM_13),
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = true,
-        .pull_down_en = false};
-    ESP_ERROR_CHECK(gpio_config(&mtck_d3));
+    ESP_LOGI(TAG, "Installing ISR");
+    err = gpio_install_isr_service(0);//ESP_INTR_FLAG_LEVEL1|ESP_INTR_FLAG_LEVEL2|ESP_INTR_FLAG_LEVEL3|ESP_INTR_FLAG_EDGE);
+    ESP_ERROR_CHECK(err);
+    ESP_LOGI(TAG, "ISR installed");
+    //hook isr handler for specific gpio pin
+    err = gpio_isr_handler_add(IMU_PIN_INT1, imu_isr_handler, (void*) NULL);
+    ESP_ERROR_CHECK(err);
+    ESP_LOGI(TAG, "ISR Handler added");
+    
+    static int16_t data_raw_acceleration[3];
+    static int16_t data_raw_angular_rate[3];
+    ism330dhcx_acceleration_raw_get(&ISM330DHCX_dev_ctx, data_raw_acceleration);
+    ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
 
-    // By default, SD card frequency is initialized to SDMMC_FREQ_DEFAULT (20MHz)
-    // For setting a specific frequency, use host.max_freq_khz (range 400kHz - 40MHz for SDMMC)
-    // Example: for fixed frequency of 10MHz, use host.max_freq_khz = 10000;
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.flags = SDMMC_HOST_FLAG_4BIT;
-    host.slot = SDMMC_HOST_SLOT_1;
-    //host.set_bus_width(0,4);
-    host.max_freq_khz = 10000;
-    // This initializes the slot without card detect (CD) and write protect (WP) signals.
-    // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
-    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.width = 4;
-    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    ESP_ERROR_CHECK(gpio_pulldown_dis(GPIO_NUM_2));
-    ESP_ERROR_CHECK(gpio_pullup_en(GPIO_NUM_2));
 
-    ESP_ERROR_CHECK(gpio_pulldown_dis(GPIO_NUM_12));
-    ESP_ERROR_CHECK(gpio_pullup_en(GPIO_NUM_12));
-    // Enable internal pullups on enabled pins. The internal pullups
-    // are insufficient however, please make sure 10k external pullups are
-    // connected on the bus. This is for debug / example purpose only.
-    //slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    vTaskDelay(100);
+    clicker = xQueueCreate(10, sizeof(int8_t));
+    
+    ESP_LOGI(TAG, "Going into loop");
+    
+    int8_t theNumber;
 
-    ESP_LOGI(TAG, "Mounting filesystem");
-    while (true)
-    {
-        ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
-
-        if (ret != ESP_OK)
-        {
-            if (ret == ESP_FAIL)
-            {
-                ESP_LOGE(TAG, "Failed to mount filesystem. "
-                              "If you want the card to be formatted, set the EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
-            }
-            else
-            {
-                ESP_LOGE(TAG, "Failed to initialize the card (%s). "
-                              "Make sure SD card lines have pull-up resistors in place.",
-                         esp_err_to_name(ret));
-            }
-             vTaskDelay(pdMS_TO_TICKS(1000));
-        }else{
-            break;
+    while(1){
+        vTaskDelay(100);
+        if(xQueueReceive(clicker,&theNumber,0)){
+            ESP_LOGI(TAG, "ISR: %i", theNumber);
+        }
+        else{
+            ESP_LOGI(TAG, "WOMP WOMP");
         }
     }
-    ESP_LOGI(TAG, "Filesystem mounted");
 
     #endif
 }
@@ -228,7 +243,9 @@ esp_err_t init_spi_IMU(void){
     memset(buscfg,0xFF,sizeof(spi_bus_config_t)); //disable extra config pins
     buscfg->miso_io_num = IMU_PIN_NUM_MISO;
     buscfg->mosi_io_num = IMU_PIN_NUM_MOSI;
-    buscfg->sclk_io_num = IMU_PIN_NUM_CLK;
+    buscfg->sclk_io_num = IMU_PIN_NUM_CLK; 
+    buscfg->quadwp_io_num = -1,
+    buscfg->quadhd_io_num = -1,
     buscfg->max_transfer_sz = 7; //limit transfer sz to 7 bytes
     buscfg->flags = 0;
     buscfg->data_io_default_level = 0;
@@ -244,7 +261,6 @@ esp_err_t init_spi_IMU(void){
 
     ESP_LOGI(init_spi_TAG, "Init Success. Adding device...");
     
-    spi_device_handle_t *spi = malloc(sizeof(spi_device_handle_t));
     spi_device_interface_config_t *devcfg = malloc(sizeof(spi_device_interface_config_t));
     memset(devcfg,0x00,sizeof(spi_device_interface_config_t));//zero out memory space
     devcfg->command_bits =      1;//one command bit (R/W)
@@ -262,7 +278,7 @@ esp_err_t init_spi_IMU(void){
     devcfg->pre_cb =            NULL; //No callbacks
     devcfg->post_cb =           NULL;
 
-    ret = spi_bus_add_device(IMU_HOST, devcfg, spi);
+    ret = spi_bus_add_device(IMU_HOST, devcfg, &IMU_spi);
 
     if(ret != 0){ // if we have an error
         return (ret); //cancel any further operation and return
@@ -271,7 +287,7 @@ esp_err_t init_spi_IMU(void){
     ISM330DHCX_dev_ctx.write_reg = IMU_write;
     ISM330DHCX_dev_ctx.read_reg = IMU_read;
     ISM330DHCX_dev_ctx.mdelay = platform_delay;
-    ISM330DHCX_dev_ctx.handle = spi;
+    ISM330DHCX_dev_ctx.handle = IMU_spi;
 
     ESP_LOGI(init_spi_TAG, "Device configured, ready for use");
 
@@ -369,6 +385,7 @@ void init_ahrs_fusion(void){
     @brief configures the ISM330DHCX, checks that device is connected and working. Implements delay at start to allow device boot time. Must be after bus initialized.
 */
 esp_err_t config_spi_IMU(void){
+    static const char Config_IMU_TAG[] = "IMU Config";
     vTaskDelay(BOOT_TIME / portTICK_PERIOD_MS);
     esp_err_t ret;
     uint8_t count = 0;
@@ -381,7 +398,7 @@ esp_err_t config_spi_IMU(void){
         platform_delay(10);
         count ++;
     }while(whoAmI != ISM330DHCX_ID && count < 10);
-    //ESP_LOGI(TAG, "Device found...");
+    ESP_LOGI(Config_IMU_TAG, "Device found...");
     if (whoAmI != ISM330DHCX_ID){
         return ESP_ERR_NOT_FOUND;
     }
@@ -393,6 +410,7 @@ esp_err_t config_spi_IMU(void){
     }
 
     do{
+        ESP_LOGI(Config_IMU_TAG, "stuck in reset loop");
         ret = ism330dhcx_reset_get(&ISM330DHCX_dev_ctx,&rst);
         ESP_ERROR_CHECK(ret);
     } while (rst);
@@ -410,9 +428,25 @@ esp_err_t config_spi_IMU(void){
     /* Set Power Mode */
     ism330dhcx_xl_power_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_HIGH_PERFORMANCE_MD);
     ism330dhcx_gy_power_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_GY_HIGH_PERFORMANCE);
+    /* Set Interupt 1 Output mode */
+    ism330dhcx_pin_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_PUSH_PULL);
+    
+    ism330dhcx_pin_int1_route_t pin_int1_route;
+    ism330dhcx_pin_int1_route_get(&ISM330DHCX_dev_ctx, &pin_int1_route);
+    pin_int1_route.int1_ctrl.int1_drdy_xl = PROPERTY_ENABLE;
+    ism330dhcx_pin_int1_route_set(&ISM330DHCX_dev_ctx, &pin_int1_route);
+    ism330dhcx_int_notification_set(&ISM330DHCX_dev_ctx,ISM330DHCX_BASE_LATCHED_EMB_PULSED);
+
+
+
+
+
+
+
     /* Reset Timestamp */
     ism330dhcx_timestamp_rst(&ISM330DHCX_dev_ctx);
 
+    ESP_LOGI(Config_IMU_TAG,"IMU Configured");
     return ret;
 
 }
