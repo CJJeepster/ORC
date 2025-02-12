@@ -1,18 +1,18 @@
 /**
   ******************************************************************************
-  * @file    LTC2664_reg.c
+  * @file    Transform.c
   * @author  Corbin Roennebeck, WSU
-  * @brief   LTC2664 driver file
+  * @brief   Transform Algorithm file
   ******************************************************************************
   */
 
 #include "Transform.h"
 
 //distances between actuator linkage and IMU
-static float _a_2ab = 0;// a/(2(a+b))
-static float _b_2ab = 0;// b/(2(a+b))
-static float _1_2ab = 0;// 1/(2(a+b))
-static float _1_2cd = 0;// 1/(2(c+d))
+static float_t _a_2ab = 0;// a/(2(a+b))
+static float_t _b_2ab = 0;// b/(2(a+b))
+static float_t _1_2ab = 0;// 1/(2(a+b))
+static float_t _1_2cd = 0;// 1/(2(c+d))
 
 static const char TAG[] = "Transform";
 
@@ -25,7 +25,7 @@ static const char TAG[] = "Transform";
  * @param   c   distance to drive side linkages
  * @param   d   distance to passenger side linkages
  */
-esp_err_t set_distances(float a, float b, float c, float d){
+esp_err_t set_distances(float_t a, float_t b, float_t c, float_t d){
     if(a < 0 || b < 0 || c < 0 || d <0 ){
         ESP_LOGE(TAG, "All distances must be positive!");
         return ESP_ERR_NOT_SUPPORTED;
@@ -40,6 +40,8 @@ esp_err_t set_distances(float a, float b, float c, float d){
 
 /**
  * @brief Transform vertical acceleration, pitch, and roll forces into 4 corner forces using small angle approximations
+ * @attention float data must be constrained to int16 min/max: -32768 to 32767
+ *              this allows easy conversion to uint16 data: 0->65535, which the DAC will enjoy
  * 
  * @param   act1    pointer to actuator 1 (front driver) force output
  * @param   act2    pointer to actuator 2 (front passenger) force output
@@ -50,19 +52,24 @@ esp_err_t set_distances(float a, float b, float c, float d){
  * @param   fPhi    pointer to overall roll force needed
  *  
  */
-void transform(float *act1, float *act2, float *act3, float *act4, float *fZ, float *fTheta, float *fPhi){
-    //generate all multiplicands
-    float _b_fZ = _b_2ab * (*fZ);
-    float _a_fZ = _a_2ab * (*fZ);
-    float _p_fT = _1_2ab * (*fTheta);
-    float _n_fT = -1.0 * _p_fT;
-    float _p_fP = _1_2cd * (*fPhi);
-    float _n_fP = -1.0 * _p_fP;
-    //perform addition to find each actuator force
-    *act1 = _b_fZ + _n_fT + _p_fP;
-    *act2 = _b_fZ + _n_fT + _n_fP;
-    *act3 = _a_fZ + _p_fT + _p_fP;
-    *act4 = _a_fZ + _p_fT + _n_fP;
+void transform(uint16_t *act1, uint16_t *act2, uint16_t *act3, uint16_t *act4, float_t *fZ, float_t *fTheta, float_t *fPhi){
+    //generate all multiplicands (all library constants are garunteed between -1 and 1, typically -1/2 and 1/2)
+    float_t _b_fZ = _b_2ab * (*fZ);
+    float_t _a_fZ = _a_2ab * (*fZ);
+    float_t _p_fT = _1_2ab * (*fTheta);
+    float_t _n_fT = -1.0 * _p_fT;
+    float_t _p_fP = _1_2cd * (*fPhi);
+    float_t _n_fP = -1.0 * _p_fP;
+    //perform addition to find each actuator force and zero reference the result.
+    float_t inter_act1 = _b_fZ + _n_fT + _p_fP + 32768.0f;
+    float_t inter_act2 = _b_fZ + _n_fT + _n_fP + 32768.0f;
+    float_t inter_act3 = _a_fZ + _p_fT + _p_fP + 32768.0f;
+    float_t inter_act4 = _a_fZ + _p_fT + _n_fP + 32768.0f;
+
+    *act1 = (uint16_t)inter_act1;
+    *act2 = (uint16_t)inter_act2;
+    *act3 = (uint16_t)inter_act3;
+    *act4 = (uint16_t)inter_act4;
 }
 
 

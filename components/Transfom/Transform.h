@@ -20,9 +20,10 @@ extern "C" {
 #include <stddef.h>
 #include <esp_err.h>
 #include "esp_log.h"
+#include <math.h>
 
-esp_err_t set_distances(float a, float b, float c, float d);
-void transform(float *act1, float *act2, float *act3, float *act4, float *fZ, float *fTheta, float *fPhi);
+esp_err_t set_distances(float_t a, float_t b, float_t c, float_t d);
+void transform(uint16_t *act1, uint16_t *act2, uint16_t *act3, uint16_t *act4, float_t *fZ, float_t *fTheta, float_t *fPhi);
 
 
 
