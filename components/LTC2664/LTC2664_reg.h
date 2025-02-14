@@ -18,6 +18,7 @@ extern "C" {
 /* Includes ------------------------------------------------------*/
 #include <stdint.h>
 #include <stddef.h>
+#include "esp_log.h"
 
 
  typedef enum
@@ -32,17 +33,14 @@ extern "C" {
 /** @brief       This section provide a set of functions used to read and
   *              write a generic register of the device.
   *              MANDATORY: return 0 -> no Error.
-  * @{
   *
   */
 typedef int32_t (*ltcdev_write_ptr)(void *, ltc2664_DACS_t, uint8_t, const uint16_t *);
-typedef void (*ltcdev_mdelay_ptr)(uint32_t millisec);
 
 typedef struct
 {
   /** Component mandatory fields **/
-  ltcdev_write_ptr  write_reg;
-  /** Customizable pointer **/
+  ltcdev_write_ptr write_reg;
   void *handle;
 } ltcdev_ctx_t;
 

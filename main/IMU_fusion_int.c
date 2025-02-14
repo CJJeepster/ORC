@@ -1,5 +1,6 @@
 //#define DAC_TEST
 //#define SD_TEST
+//#define TIMING_TESTING
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,21 +28,26 @@
 
 #define EXAMPLE_MAX_CHAR_SIZE    64
 #define MOUNT_POINT "/sdcard"
-#define SAMPLE_PERIOD 0.0048076923076923f
 
 #define IMU_HOST            VSPI_HOST
-#define DAC_HOST            HSPI_HOST
 #define IMU_PIN_NUM_MISO    13//19
 #define IMU_PIN_NUM_MOSI    12//23
 #define IMU_PIN_NUM_CLK     14//18
 #define IMU_PIN_NUM_CS      15//5
 #define IMU_PIN_INT1        22//32
+#define GPIO_INT_PIN_SEL (1ULL<<IMU_PIN_INT1)
+
+#define DAC_HOST            HSPI_HOST
 #define DAC_PIN_NUM_MISO    -1
 #define DAC_PIN_NUM_MOSI    27
 #define DAC_PIN_NUM_CLK     26
 #define DAC_PIN_NUM_CS      25
 
-#define GPIO_INT_PIN_SEL ((1ULL<<IMU_PIN_INT1))
+#if defined TIMING_TESTING
+#define TIMING_OUT          5
+#define GPIO_OUT_TIMING (1ULL<<TIMING_OUT)
+#endif
+
 
 #define BOOT_TIME         10 //ms
 
@@ -49,11 +55,11 @@ static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, cons
 static int32_t IMU_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len);
 static int32_t IMU_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len);
 static void platform_delay(uint32_t ms);
-esp_err_t init_spi_IMU();
-esp_err_t init_spi_DAC();
-void init_ahrs_fusion(void);
-void init_pid_controllers(void);
-esp_err_t config_spi_IMU(void);
+static esp_err_t init_spi_IMU();
+static esp_err_t init_spi_DAC();
+static void init_ahrs_fusion(void);
+static void init_pid_controllers(void);
+static esp_err_t config_spi_IMU(void);
 
 
 typedef struct
@@ -66,47 +72,56 @@ typedef struct
 
 static QueueHandle_t log_data_queue = NULL;
 
-stmdev_ctx_t ISM330DHCX_dev_ctx;
-spi_device_handle_t IMU_spi;
-ltcdev_ctx_t LTC2664_dev_ctx;
-FusionAhrs ahrs;
-FusionEuler euler;
-FusionVector linear;
-TaskHandle_t IMU_TASK;
-PIDController_t accel_z_controller ={};
-PIDController_t pitch_controller={};
-PIDController_t roll_controller={};
-float_t float_time;
+static stmdev_ctx_t ISM330DHCX_dev_ctx;
+static spi_device_handle_t IMU_spi;
 
+static ltcdev_ctx_t LTC2664_dev_ctx;
+static spi_device_handle_t DAC_spi;
+
+static FusionAhrs ahrs;
+
+static TaskHandle_t IMU_TASK;
+
+static float_t float_time;
+
+static PIDController_t accel_z_controller ={};
+static PIDController_t pitch_controller={};
+static PIDController_t roll_controller={};
 
 //IMU interupt routine (does all the shiz but writing to SD)
 static void IRAM_ATTR imu_isr_handler(void* arg){
     
     vTaskNotifyGiveFromISR(IMU_TASK,NULL);
+    #if defined TIMING_TESTING
+    gpio_set_level(TIMING_OUT, 1);
+    #endif
 
-    
-}
-
-static void print_results_task(void* arg){
-    for(;;) {
-       //printf("\x1b[1F\33[2K\rRoll %0.3f, Pitch %0.3f, Yaw %0.3f, Elapsed Time %0.9f\n", euler.angle.roll,euler.angle.pitch, euler.angle.yaw, float_time);
-        vTaskDelay(5);
-    }
 }
 
 static void IMU_sample_task(void* arg)
 {
-    static int16_t data_raw_acceleration[3];
-    static int16_t data_raw_angular_rate[3];
-    static log_data_t df;
+
+    int16_t data_raw_acceleration[3];
+    int16_t data_raw_angular_rate[3];
+    log_data_t df;
     float acceleration_z_float;
     float pitch_float;
     float roll_float;
-    uint64_t start = 0, end = 0;
+    FusionEuler euler;
+    FusionVector linear;
     uint16_t actuator1, actuator2, actuator3, actuator4;
+
+    const char TAG[] = "IMU Sampling Task";
+
+
+
+    /* Read a register from the IMU to kick off interupt sampling */
+    ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
+    ism330dhcx_acceleration_raw_get(&ISM330DHCX_dev_ctx, data_raw_acceleration);
+
     for (;;) {
         
-        ulTaskNotifyTake(pdFALSE,portMAX_DELAY);//check that this is actually delaying.........
+        ulTaskNotifyTake(pdFALSE,portMAX_DELAY);
         //when IMU_PIN_INT1 rising edge
 
         //read accel/gyro
@@ -130,8 +145,6 @@ static void IMU_sample_task(void* arg)
         euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
         linear = FusionAhrsGetLinearAcceleration(&ahrs);
 
-        //above section takes approx: 100 microseconds to execute.
-
         //send data to be logged
         df.acceleration_z = linear.axis.z;
         df.pitch = euler.angle.pitch;
@@ -145,12 +158,16 @@ static void IMU_sample_task(void* arg)
 
         //transform
         transform(&actuator1,&actuator2,&actuator3,&actuator4,&acceleration_z_float,&pitch_float,&roll_float);
-        //printf("\x1b[1F\33[2K\r1: %f, 2: %u, 3: %u, 4: %u\n", pitch_float, actuator2, actuator3, actuator4);
-        
-    start = esp_timer_get_time(); //need to see that ESP32 can really keep up as speed goes up and more functions are added
-        printf("\x1b[1F\33[2K\rfloat_time: %f, function_time: %llu\n", float_time, start-end);
-    end = esp_timer_get_time();
 
+        printf("\x1b[1F\33[2K\r1: %u, 2: %u, 3: %u, 4: %u\n", actuator1, actuator2, actuator3, actuator4);
+
+        ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &actuator1);
+        ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &actuator2);
+        ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &actuator3);
+        ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &actuator4);
+        #if defined TIMING_TESTING
+        gpio_set_level(TIMING_OUT, 0);
+        #endif
         //write to dac and internal buffer
         
 
@@ -225,6 +242,13 @@ void app_main(void){
     
     #elif defined SD_TEST
     //test sd card
+
+
+
+
+
+
+
     #else
     //normal operation
 
@@ -237,23 +261,29 @@ void app_main(void){
     io_conf.pull_down_en = 1;
     gpio_config(&io_conf);
 
+    #if defined TIMING_TESTING
+    /* Configure Output Pin for Timing */
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.pin_bit_mask = GPIO_OUT_TIMING;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+    #endif
+
     /* Initialize IMU*/
     err = init_spi_IMU();
     ESP_ERROR_CHECK(err);
     err = config_spi_IMU();
-    ESP_ERROR_CHECK(err);
-    
-    /* Gather frequency data from IMU */
-    uint8_t freq;
-    ism330dhcx_read_reg(&ISM330DHCX_dev_ctx,ISM330DHCX_INTERNAL_FREQ_FINE,&freq,1);
-    /* Convert this raw data to seconds */
-    float_time = 2.0/(6666.6666666666666666+(10.0*freq)); //32 coresponds to ODR_Coeff page 60 of ST app. note AN5398
+    ESP_ERROR_CHECK(err);    
 
     /* Initialize IMU related Controllers */
     init_ahrs_fusion();
     init_pid_controllers();
 
     /* Initialize DAC */
+    err = init_spi_DAC();
+    ESP_ERROR_CHECK(err);
 
     /* Initialize Transform Matrix Distances*/
     err = set_distances(.05,.05,.05,.05);
@@ -265,20 +295,13 @@ void app_main(void){
     /* Start tasks for IMU sampling, SD card, debug, etc*/
     ESP_LOGI(TAG, "Starting Tasks");
     xTaskCreatePinnedToCore(IMU_sample_task, "IMU_sample_task", 2048, NULL, 10, &IMU_TASK, APP_CPU_NUM);
-    xTaskCreatePinnedToCore(print_results_task, "print_results_task", 2048, NULL, 1, NULL, PRO_CPU_NUM);
 
-
+    /* Set up ISR */
     ESP_LOGI(TAG, "Installing ISR");
     err = gpio_install_isr_service(0);
     ESP_ERROR_CHECK(err);
     err = gpio_isr_handler_add(IMU_PIN_INT1, imu_isr_handler, (void*) IMU_PIN_INT1);
     ESP_ERROR_CHECK(err);
-    
-    /* Read a register from the IMU to kick off interupt sampling */
-    static int16_t data_raw_angular_rate[3];
-    static int16_t data_raw_acceleration[3];
-    ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
-    ism330dhcx_acceleration_raw_get(&ISM330DHCX_dev_ctx, data_raw_acceleration);
     
     ESP_LOGI(TAG, "Begin Normal Operation");
     while (1)
@@ -286,7 +309,6 @@ void app_main(void){
     vTaskDelay(10000);
     }
     
-
     #endif
 }
 
@@ -370,7 +392,9 @@ esp_err_t init_spi_DAC(void){
     buscfg->miso_io_num = DAC_PIN_NUM_MISO;
     buscfg->mosi_io_num = DAC_PIN_NUM_MOSI;
     buscfg->sclk_io_num = DAC_PIN_NUM_CLK;
-    buscfg->max_transfer_sz = 3; //limit transfer sz to 7 bytes
+    buscfg->quadwp_io_num = -1,
+    buscfg->quadhd_io_num = -1,
+    buscfg->max_transfer_sz = 7; //limit transfer sz to 7 bytes
     buscfg->flags = 0;
     buscfg->data_io_default_level = 0;
     buscfg->intr_flags = 0;
@@ -385,7 +409,6 @@ esp_err_t init_spi_DAC(void){
 
     ESP_LOGI(init_spi_TAG, "Init Success. Adding device...");
     
-    spi_device_handle_t *spi = malloc(sizeof(spi_device_handle_t));
     spi_device_interface_config_t *devcfg = malloc(sizeof(spi_device_interface_config_t));
     memset(devcfg,0x00,sizeof(spi_device_interface_config_t));//zero out memory space
     devcfg->command_bits =      4;//one command bit (R/W)
@@ -395,7 +418,7 @@ esp_err_t init_spi_DAC(void){
     devcfg->duty_cycle_pos =    128; //50%/50% duty cycle
     devcfg->cs_ena_pretrans =   0;//CS timed with clock
     devcfg->cs_ena_posttrans =  0;
-    devcfg->clock_speed_hz=     49*1000*1000; //49Mhz
+    devcfg->clock_speed_hz=     40*1000*1000; //49Mhz
     devcfg->input_delay_ns =    0;
     devcfg->spics_io_num=       DAC_PIN_NUM_CS;
     devcfg->flags =             SPI_DEVICE_NO_DUMMY; //disable high freq(>100MHZ) workaround
@@ -403,14 +426,14 @@ esp_err_t init_spi_DAC(void){
     devcfg->pre_cb =            NULL; //No callbacks
     devcfg->post_cb =           NULL;
 
-    ret = spi_bus_add_device(IMU_HOST, devcfg, spi);
+    ret = spi_bus_add_device(DAC_HOST, devcfg, &DAC_spi);
 
     if(ret != 0){ // if we have an error
         return (ret); //cancel any further operation and return
     }
 
     LTC2664_dev_ctx.write_reg = DAC_write;
-    LTC2664_dev_ctx.handle = spi;
+    LTC2664_dev_ctx.handle = DAC_spi;
 
     ESP_LOGI(init_spi_TAG, "Device configured, ready for use");
 
@@ -475,7 +498,7 @@ void init_ahrs_fusion(void){
     ahrs_settings->gyroscopeRange =         500;//dps
     ahrs_settings->gain =                   .5; //influence of gyroscope
     ahrs_settings->convention =             FusionConventionEnu; //earth axes convention (consistent with ISM330DHCX)
-    ahrs_settings->recoveryTriggerPeriod =  5/SAMPLE_PERIOD; //approx 5 second recovery trigger period
+    ahrs_settings->recoveryTriggerPeriod =  5/float_time; //approx 5 second recovery trigger period
 
     FusionAhrsSetSettings(&ahrs, ahrs_settings);
 
@@ -514,7 +537,7 @@ esp_err_t config_spi_IMU(void){
     }
 
     do{
-        ESP_LOGI(Config_IMU_TAG, "stuck in reset loop");
+        ESP_LOGI(Config_IMU_TAG, "In reset loop");
         ret = ism330dhcx_reset_get(&ISM330DHCX_dev_ctx,&rst);
         ESP_ERROR_CHECK(ret);
     } while (rst);
@@ -524,8 +547,8 @@ esp_err_t config_spi_IMU(void){
     /* Enable Block Data Update */
     ism330dhcx_block_data_update_set(&ISM330DHCX_dev_ctx, PROPERTY_DISABLE);
     /* Set Output Data Rate */
-    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_3332Hz);
-    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_3332Hz);
+    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_6667Hz);
+    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_6667Hz);
     /* Set full scale */
     ism330dhcx_xl_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_2g);
     ism330dhcx_gy_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_500dps);
@@ -534,12 +557,19 @@ esp_err_t config_spi_IMU(void){
     ism330dhcx_gy_power_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_GY_HIGH_PERFORMANCE);
     /* Set Interupt 1 Output mode */
     ism330dhcx_pin_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_PUSH_PULL);
-    
+    ism330dhcx_int_notification_set(&ISM330DHCX_dev_ctx,ISM330DHCX_BASE_LATCHED_EMB_PULSED);
+    /* Set inturput type (interupt on drdy for accelerometer. in sync w/ gyroscope) */
     ism330dhcx_pin_int1_route_t pin_int1_route;
     ism330dhcx_pin_int1_route_get(&ISM330DHCX_dev_ctx, &pin_int1_route);
     pin_int1_route.int1_ctrl.int1_drdy_xl = PROPERTY_ENABLE;
     ism330dhcx_pin_int1_route_set(&ISM330DHCX_dev_ctx, &pin_int1_route);
-    ism330dhcx_int_notification_set(&ISM330DHCX_dev_ctx,ISM330DHCX_BASE_LATCHED_EMB_PULSED);
+    
+    /* Gather frequency data from IMU */
+    uint8_t freq;
+    ism330dhcx_read_reg(&ISM330DHCX_dev_ctx,ISM330DHCX_INTERNAL_FREQ_FINE,&freq,1);
+    /* Convert this raw data to seconds */
+    float_time = 1.0/(6666.6666666666666666+(10.0*freq)); //1.0 coresponds to ODR_Coeff page 60 of ST app. note AN5398
+    ESP_LOGI(Config_IMU_TAG, "Sample Period: %0.9f", float_time);
 
     /* Reset Timestamp */
     ism330dhcx_timestamp_rst(&ISM330DHCX_dev_ctx);
@@ -620,7 +650,8 @@ static int32_t IMU_write(void *handle, uint8_t reg, const uint8_t *bufp,
  * 
  * @return  ret     0 = no error
  */
-static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, const uint16_t *data){
+static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, const uint16_t *data)
+{
     esp_err_t ret;
     spi_transaction_t t;
     memset( &t, 0x00, sizeof(t) );
