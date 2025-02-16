@@ -1,6 +1,6 @@
 //#define DAC_TEST
 //#define SD_TEST
-//#define TIMING_TESTING
+#define TIMING_TESTING
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,12 +28,18 @@
 
 #define EXAMPLE_MAX_CHAR_SIZE    64
 #define MOUNT_POINT "/sdcard"
+#define SD_PIN_D3    13
+#define SD_PIN_D2    12
+#define SD_PIN_CLK   14
+#define SD_PIN_CMD   15
+#define SD_PIN_D0    2
+#define SD_PIN_D1    4
 
 #define IMU_HOST            VSPI_HOST
-#define IMU_PIN_NUM_MISO    13//19
-#define IMU_PIN_NUM_MOSI    12//23
-#define IMU_PIN_NUM_CLK     14//18
-#define IMU_PIN_NUM_CS      15//5
+#define IMU_PIN_NUM_MISO    19
+#define IMU_PIN_NUM_MOSI    23
+#define IMU_PIN_NUM_CLK     18
+#define IMU_PIN_NUM_CS      5
 #define IMU_PIN_INT1        22//32
 #define GPIO_INT_PIN_SEL (1ULL<<IMU_PIN_INT1)
 
@@ -43,8 +49,9 @@
 #define DAC_PIN_NUM_CLK     26
 #define DAC_PIN_NUM_CS      25
 
+
 #if defined TIMING_TESTING
-#define TIMING_OUT          5
+#define TIMING_OUT          16
 #define GPIO_OUT_TIMING (1ULL<<TIMING_OUT)
 #endif
 
@@ -88,6 +95,28 @@ static PIDController_t accel_z_controller ={};
 static PIDController_t pitch_controller={};
 static PIDController_t roll_controller={};
 
+#ifdef SD_TEST
+static esp_err_t s_example_write_file(const char *path, char *data)
+{
+    
+static const char *TAG = "example";
+    ESP_LOGI(TAG, "Opening file %s", path);
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for writing");
+        return ESP_FAIL;
+    }
+    fprintf(f, data);
+    fclose(f);
+    ESP_LOGI(TAG, "File written");
+
+    return ESP_OK;
+}
+#endif
+
+#ifndef SD_TEST
+
+
 //IMU interupt routine (does all the shiz but writing to SD)
 static void IRAM_ATTR imu_isr_handler(void* arg){
     
@@ -113,7 +142,7 @@ static void IMU_sample_task(void* arg)
 
     const char TAG[] = "IMU Sampling Task";
 
-
+    vTaskDelay(1000);
 
     /* Read a register from the IMU to kick off interupt sampling */
     ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
@@ -161,6 +190,7 @@ static void IMU_sample_task(void* arg)
 
         printf("\x1b[1F\33[2K\r1: %u, 2: %u, 3: %u, 4: %u\n", actuator1, actuator2, actuator3, actuator4);
 
+        //write to dac
         ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &actuator1);
         ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &actuator2);
         ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &actuator3);
@@ -168,11 +198,11 @@ static void IMU_sample_task(void* arg)
         #if defined TIMING_TESTING
         gpio_set_level(TIMING_OUT, 0);
         #endif
-        //write to dac and internal buffer
         
-
+        
     }
 }
+#endif
 
 
 //need to add timestamp enable
@@ -243,16 +273,97 @@ void app_main(void){
     #elif defined SD_TEST
     //test sd card
 
+    esp_err_t ret;
+
+    // Options for mounting the filesystem.
+    // If format_if_mount_failed is set to true, SD card will be partitioned and
+    // formatted in case when mounting fails.
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+    sdmmc_card_t *card;
+    const char mount_point[] = MOUNT_POINT;
+    ESP_LOGI(TAG, "Initializing SD card");
+
+    // Use settings defined above to initialize SD card and mount FAT filesystem.
+    // Note: esp_vfs_fat_sdmmc/sdspi_mount is all-in-one convenience functions.
+    // Please check its source code and implement error recovery when developing
+    // production applications.
+
+    ESP_LOGI(TAG, "Using SDMMC peripheral");
+
+    // By default, SD card frequency is initialized to SDMMC_FREQ_DEFAULT (20MHz)
+    // For setting a specific frequency, use host.max_freq_khz (range 400kHz - 40MHz for SDMMC)
+    // Example: for fixed frequency of 10MHz, use host.max_freq_khz = 10000;
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = 400;
+
+    // This initializes the slot without card detect (CD) and write protect (WP) signals.
+    // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+
+    // Set bus width to use:
+    slot_config.width = 4;
 
 
+    // On chips where the GPIOs used for SD card can be configured, set them in
+    // the slot_config structure:
+    slot_config.clk = SD_PIN_CLK;
+    slot_config.cmd = SD_PIN_CMD;
+    slot_config.d0 = SD_PIN_D0;
+    slot_config.d1 = SD_PIN_D1;
+    slot_config.d2 = SD_PIN_D2;
+    slot_config.d3 = SD_PIN_D3;
 
+    // Enable internal pullups on enabled pins. The internal pullups
+    // are insufficient however, please make sure 10k external pullups are
+    // connected on the bus. This is for debug / example purpose only.
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
+    ESP_LOGI(TAG, "Mounting filesystem");
+    ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
 
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount filesystem. "
+                     "If you want the card to be formatted, set the EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize the card (%s). "
+                     "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "Filesystem mounted");
+
+    // Card has been initialized, print its properties
+    sdmmc_card_print_info(stdout, card);
+
+    // Use POSIX and C standard library functions to work with files:
+
+    // First create a file.
+    const char *file_hello = MOUNT_POINT"/hello.csv";
+    char data[EXAMPLE_MAX_CHAR_SIZE];
+    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s %s!\n", "Hello", card->cid.name);
+    ret = s_example_write_file(file_hello, data);
+    if (ret != ESP_OK) {
+        return;
+    }
+
+    while(1){
+        ret = s_example_write_file(file_hello, data);
+        if (ret != ESP_OK) {
+            return;
+        }
+        ESP_LOGI(TAG,"Data Written");
+        vTaskDelay(100);
+
+    }
 
     #else
     //normal operation
 
-    /* Configure Interupt Pin For IMU*/
+    /* Configure Interupt Pin For IMU */
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_POSEDGE;
     io_conf.pin_bit_mask = GPIO_INT_PIN_SEL;
@@ -285,34 +396,99 @@ void app_main(void){
     err = init_spi_DAC();
     ESP_ERROR_CHECK(err);
 
-    /* Initialize Transform Matrix Distances*/
+    /* Initialize Transform Matrix Distances */
     err = set_distances(.05,.05,.05,.05);
     ESP_ERROR_CHECK(err);
 
-    /* Create Queue for transfering data to SD card function*/
+    /* Create Queue for transfering data to SD card function */
     log_data_queue = xQueueCreate(100, sizeof(log_data_t));
+
+    /* Initialize SD Card*/
+    esp_err_t ret;
+
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+    sdmmc_card_t *card;
+    const char mount_point[] = MOUNT_POINT;
+    ESP_LOGI(TAG, "Initializing SD card");
+
+    ESP_LOGI(TAG, "Using SDMMC peripheral");
+
+    //Increase the speed here as much as possible
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = 10000;
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;
+    slot_config.clk = SD_PIN_CLK;
+    slot_config.cmd = SD_PIN_CMD;
+    slot_config.d0 = SD_PIN_D0;
+    slot_config.d1 = SD_PIN_D1;
+    slot_config.d2 = SD_PIN_D2;
+    slot_config.d3 = SD_PIN_D3;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    ESP_LOGI(TAG, "Mounting filesystem");
+    ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount filesystem.");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize the card (%s).", esp_err_to_name(ret));
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "Filesystem mounted");
+
+    sdmmc_card_print_info(stdout, card);
+
+    const char *file_name = MOUNT_POINT"/log.csv";
+    char data[EXAMPLE_MAX_CHAR_SIZE];
     
-    /* Start tasks for IMU sampling, SD card, debug, etc*/
-    ESP_LOGI(TAG, "Starting Tasks");
-    xTaskCreatePinnedToCore(IMU_sample_task, "IMU_sample_task", 2048, NULL, 10, &IMU_TASK, APP_CPU_NUM);
+    ESP_LOGI(TAG, "Opening file %s", file_name);
+    FILE *f = fopen(file_name, "a");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for writing");
+        return;
+    }
+
+    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "#, Z_acceleration, Pitch, Roll\n");
+    fprintf(f, data);
 
     /* Set up ISR */
     ESP_LOGI(TAG, "Installing ISR");
     err = gpio_install_isr_service(0);
     ESP_ERROR_CHECK(err);
     err = gpio_isr_handler_add(IMU_PIN_INT1, imu_isr_handler, (void*) IMU_PIN_INT1);
-    ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(err);    
+
+    /* Start tasks for IMU sampling*/
+    ESP_LOGI(TAG, "Starting IMU Task");
+    xTaskCreatePinnedToCore(IMU_sample_task, "IMU_sample_task", 65536, NULL, 9, &IMU_TASK, APP_CPU_NUM);
     
     ESP_LOGI(TAG, "Begin Normal Operation");
-    while (1)
-    {
-    vTaskDelay(10000);
+    log_data_t log_data;
+    int lines = 0;
+    while(1){
+        if(xQueueReceive(log_data_queue,&log_data, 1)){
+            snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%i, %e, %e, %e\n", lines++, log_data.acceleration_z, log_data.pitch, log_data.roll);
+            fprintf(f, data);
+            if(lines % 6667 == 0){ //lose as much as 1 second of data by saving approx. every second.
+                fclose(f);
+                f = fopen(file_name, "a");
+            }
+        }
+        vTaskDelay(1);
     }
     
     #endif
 }
 
 
+#ifndef SD_TEST
 /**
     @brief Initialize the ISM330DHCX_device's SPI bus
 */
@@ -547,8 +723,8 @@ esp_err_t config_spi_IMU(void){
     /* Enable Block Data Update */
     ism330dhcx_block_data_update_set(&ISM330DHCX_dev_ctx, PROPERTY_DISABLE);
     /* Set Output Data Rate */
-    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_6667Hz);
-    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_6667Hz);
+    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_208Hz);
+    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_208Hz);
     /* Set full scale */
     ism330dhcx_xl_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_2g);
     ism330dhcx_gy_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_500dps);
@@ -665,3 +841,5 @@ static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, cons
 
     return (int)ret;
 }
+
+#endif

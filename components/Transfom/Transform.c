@@ -20,10 +20,10 @@ static const char TAG[] = "Transform";
  * @brief set vehicle actuator to IMU dimensions and associated transform multiplier
  * @bug NEED TO DEFINE UNITS FOR DISTANCE
  * 
- * @param   a   distance to front axle linkages
- * @param   b   distance to rear axle linkages
- * @param   c   distance to drive side linkages
- * @param   d   distance to passenger side linkages
+ * @param   a   distance to front axle linkages (in meters)
+ * @param   b   distance to rear axle linkages (in meters)
+ * @param   c   distance to drive side linkages (in meters)
+ * @param   d   distance to passenger side linkages (in meters)
  */
 esp_err_t set_distances(float_t a, float_t b, float_t c, float_t d){
     if(a < 0 || b < 0 || c < 0 || d <0 ){
