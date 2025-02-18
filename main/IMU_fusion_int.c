@@ -26,6 +26,12 @@
 #include "Transform.h"
 #include "PID.h"
 
+#define MUX_PIN_A0      33
+#define MUX_PIN_A1      32
+#define COMPARATOR_PIN  21
+#define GPIO_MUX_PINS   ((1ULL<<MUX_PIN_A0) | (1ULL<<MUX_PIN_A1))
+#define GPIO_COMP_PINS  (1ULL<<COMPARATOR_PIN)
+
 #define EXAMPLE_MAX_CHAR_SIZE    64
 #define MOUNT_POINT "/sdcard"
 #define SD_PIN_D3    13
@@ -66,7 +72,8 @@ static esp_err_t init_spi_IMU();
 static esp_err_t init_spi_DAC();
 static void init_ahrs_fusion(void);
 static void init_pid_controllers(void);
-static esp_err_t config_spi_IMU(void);
+static esp_err_t config_IMU(void);
+static esp_err_t config_DAC(void);
 
 
 typedef struct
@@ -382,10 +389,24 @@ void app_main(void){
     gpio_config(&io_conf);
     #endif
 
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.pin_bit_mask = GPIO_MUX_PINS;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.pin_bit_mask = GPIO_COMP_PINS;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+
     /* Initialize IMU*/
     err = init_spi_IMU();
     ESP_ERROR_CHECK(err);
-    err = config_spi_IMU();
+    err = config_IMU();
     ESP_ERROR_CHECK(err);    
 
     /* Initialize IMU related Controllers */
@@ -687,7 +708,7 @@ void init_ahrs_fusion(void){
 /**
     @brief configures the ISM330DHCX, checks that device is connected and working. Implements delay at start to allow device boot time. Must be after bus initialized.
 */
-esp_err_t config_spi_IMU(void){
+esp_err_t config_IMU(void){
     static const char Config_IMU_TAG[] = "IMU Config";
     vTaskDelay(BOOT_TIME / portTICK_PERIOD_MS);
     esp_err_t ret;
@@ -755,6 +776,50 @@ esp_err_t config_spi_IMU(void){
 
 }
 
+esp_err_t DAC_find_offset(ltc2664_DACS_t dac){
+    esp_err_t ret;
+
+    //zero out the offsets used in writing to the dac
+    int32_t signed_offset = 0;
+    ltc2664_save_offset(dac, &signed_offset);
+
+    uint16_t input = UINT16_MAX/2;
+    uint16_t adjuster = input/2;
+    //initialize the dac to midscale
+    ret = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, dac, &input);
+    //assign mux to match selected dac
+    gpio_set_level(MUX_PIN_A0, dac & 0x0001);
+    gpio_set_level(MUX_PIN_A1, (dac & 0x0002) >> 1);
+    //narrow the adjuster while moving the input value up or down according to the comparator input
+    while(adjuster > 2){
+        vTaskDelay(70); //allow the DAC, Comparator, and amplifier to settle (set to have a single dac calibrated in less than 1 second)
+        if(gpio_get_level(COMPARATOR_PIN)){ //may need to flip this condition to match actual amplifier response.
+            input += adjuster;
+        }
+        else{
+            input -= adjuster;
+        }
+        ret = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, dac, &input);
+        if(ret != ESP_OK) return ret;
+        adjuster = adjuster/2;
+    }
+
+    int32_t signed_input = input;
+    signed_offset = input-(UINT16_MAX/2);
+    //save that offset to be used in DAC writing function;
+    ltc2664_save_offset(dac, &signed_offset);
+
+    return ret;
+}
+
+esp_err_t config_DAC(void){
+    esp_err_t ret;
+    for(int dac = 0; dac < 4; dac++){ //brute force the possible dacs found in ltc2664_DACS_t
+        ret = DAC_find_offset(dac); //find offsets for all of them.
+        if(ret != ESP_OK) return ret;
+    }
+    return ret;
+}
 
 static void platform_delay(uint32_t ms)
 {
