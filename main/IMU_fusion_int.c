@@ -1,6 +1,6 @@
 //#define DAC_TEST
 //#define SD_TEST
-#define TIMING_TESTING
+//#define TIMING_TESTING
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +32,7 @@
 #define GPIO_MUX_PINS   ((1ULL<<MUX_PIN_A0) | (1ULL<<MUX_PIN_A1))
 #define GPIO_COMP_PINS  (1ULL<<COMPARATOR_PIN)
 
-#define EXAMPLE_MAX_CHAR_SIZE    64
+#define EXAMPLE_MAX_CHAR_SIZE    8192*4
 #define MOUNT_POINT "/sdcard"
 #define SD_PIN_D3    13
 #define SD_PIN_D2    12
@@ -42,8 +42,8 @@
 #define SD_PIN_D1    4
 
 #define IMU_HOST            VSPI_HOST
-#define IMU_PIN_NUM_MISO    19
-#define IMU_PIN_NUM_MOSI    23
+#define IMU_PIN_NUM_MISO    23
+#define IMU_PIN_NUM_MOSI    19
 #define IMU_PIN_NUM_CLK     18
 #define IMU_PIN_NUM_CS      5
 #define IMU_PIN_INT1        22//32
@@ -154,6 +154,7 @@ static void IMU_sample_task(void* arg)
     /* Read a register from the IMU to kick off interupt sampling */
     ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
     ism330dhcx_acceleration_raw_get(&ISM330DHCX_dev_ctx, data_raw_acceleration);
+    ESP_LOGI(TAG,"Sampling started");
 
     for (;;) {
         
@@ -195,7 +196,7 @@ static void IMU_sample_task(void* arg)
         //transform
         transform(&actuator1,&actuator2,&actuator3,&actuator4,&acceleration_z_float,&pitch_float,&roll_float);
 
-        printf("\x1b[1F\33[2K\r1: %u, 2: %u, 3: %u, 4: %u\n", actuator1, actuator2, actuator3, actuator4);
+        //printf("\x1b[1F\33[2K\r1: %u, 2: %u, 3: %u, 4: %u\n", actuator1, actuator2, actuator3, actuator4);
 
         //write to dac
         ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &actuator1);
@@ -422,7 +423,7 @@ void app_main(void){
     ESP_ERROR_CHECK(err);
 
     /* Create Queue for transfering data to SD card function */
-    log_data_queue = xQueueCreate(100, sizeof(log_data_t));
+    log_data_queue = xQueueCreate(7000, sizeof(log_data_t));
 
     /* Initialize SD Card*/
     esp_err_t ret;
@@ -439,7 +440,7 @@ void app_main(void){
 
     //Increase the speed here as much as possible
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = 10000;
+    host.max_freq_khz = 45000;
 
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_config.width = 4;
@@ -466,8 +467,11 @@ void app_main(void){
 
     sdmmc_card_print_info(stdout, card);
 
-    const char *file_name = MOUNT_POINT"/log.csv";
-    char data[EXAMPLE_MAX_CHAR_SIZE];
+    char temp_string[33];
+    sprintf(temp_string, "%i", rand());
+
+    char *file_name = MOUNT_POINT"/log.csv"; ///find a way to insert temp string here....
+    char *cache = malloc(EXAMPLE_MAX_CHAR_SIZE);
     
     ESP_LOGI(TAG, "Opening file %s", file_name);
     FILE *f = fopen(file_name, "a");
@@ -476,9 +480,9 @@ void app_main(void){
         return;
     }
 
-    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "#, Z_acceleration, Pitch, Roll\n");
-    fprintf(f, data);
-
+    uint32_t lines = 0;//counts how many 64 byte lines are in "cache"
+    // snprintf(temp_string, 32, "#, Z_acceleration, Pitch, Roll\n");
+    // memcpy(cache + (32*lines++), temp_string, 31);
     /* Set up ISR */
     ESP_LOGI(TAG, "Installing ISR");
     err = gpio_install_isr_service(0);
@@ -492,17 +496,27 @@ void app_main(void){
     
     ESP_LOGI(TAG, "Begin Normal Operation");
     log_data_t log_data;
-    int lines = 0;
+    int written_length;
     while(1){
-        if(xQueueReceive(log_data_queue,&log_data, 1)){
-            snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%i, %e, %e, %e\n", lines++, log_data.acceleration_z, log_data.pitch, log_data.roll);
-            fprintf(f, data);
-            if(lines % 6667 == 0){ //lose as much as 1 second of data by saving approx. every second.
+        if(xQueueReceive(log_data_queue,&log_data, 0)){
+            written_length = snprintf(temp_string, 32, "% .4f,% .4f,% .4f\n", log_data.acceleration_z, log_data.pitch, log_data.roll);
+            //printf("%i\n",(int)(cache + 32*lines));
+            memcpy(cache + (lines), temp_string, written_length);
+            lines += written_length;
+            if(lines >= EXAMPLE_MAX_CHAR_SIZE-64){ //lose as much as 1 second of data by saving approx. every second.
+                cache[lines] = '\0';
+                fprintf(f, cache);
+                //printf(cache);
+                //printf("\n");
                 fclose(f);
                 f = fopen(file_name, "a");
+                printf("%i\n",(int)uxQueueMessagesWaiting(log_data_queue));
+                lines = 0;
             }
         }
-        vTaskDelay(1);
+        else{
+            vTaskDelay(1);
+        }
     }
     
     #endif
@@ -744,8 +758,8 @@ esp_err_t config_IMU(void){
     /* Enable Block Data Update */
     ism330dhcx_block_data_update_set(&ISM330DHCX_dev_ctx, PROPERTY_DISABLE);
     /* Set Output Data Rate */
-    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_208Hz);
-    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_208Hz);
+    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_6667Hz);
+    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_6667Hz);
     /* Set full scale */
     ism330dhcx_xl_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_2g);
     ism330dhcx_gy_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_500dps);

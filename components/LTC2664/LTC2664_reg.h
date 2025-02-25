@@ -45,6 +45,8 @@ typedef struct
 } ltcdev_ctx_t;
 
 
+void ltc2664_save_offset(ltc2664_DACS_t dac, int32_t *offset);
+
 int32_t ltc2664_write_reg(const ltcdev_ctx_t *ctx, ltc2664_DACS_t dac, uint8_t command, 
                                 const uint16_t *data);
 /**
