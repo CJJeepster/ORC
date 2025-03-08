@@ -53,8 +53,9 @@
 #define DAC_PIN_NUM_CLK     26
 #define DAC_PIN_NUM_CS      25
 
-#define STATUS_LED          17
-#define GPIO_STATUS_PINS    (1ULL<<STATUS_LED)
+#define STATUS_LED1         17
+#define STATUS_LED2         0
+#define GPIO_STATUS_PINS    ((1ULL<<STATUS_LED2) | (1ULL<<STATUS_LED1))
 #define MODE_SW_EN_LOGGING  34
 #define MODE_SW_EN_ACTUATOR 35
 #define MODE_SW_START_LOG   36    //start and stop log via this switch, or replace with external controller ouput
@@ -63,10 +64,10 @@
 
 #define IMU_BOOT_TIME       10 //ms
 
-#define FA_COG      .011    //distance to front axle linkages (in meters) from COG
-#define RA_COG      .018    //distance to rear axle linkages (in meters) from COG
-#define DA_COG      .008    //distance to drive side linkages (in meters) from COG
-#define PA_COG      .008    //distance to passenger side linkages (in meters) from COG
+#define FA_COG      0.011    //distance to front axle linkages (in meters) from COG
+#define RA_COG      0.018    //distance to rear axle linkages (in meters) from COG
+#define DA_COG      0.008    //distance to drive side linkages (in meters) from COG
+#define PA_COG      0.008    //distance to passenger side linkages (in meters) from COG
 
 //spi functions for devices, platform delay for advanced IMU functions
 static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, const uint16_t *data);
@@ -135,9 +136,9 @@ static void IMU_sample_task(void* arg)
     int16_t data_raw_acceleration[3];
     int16_t data_raw_angular_rate[3];
     log_data_t df;
-    float acceleration_z_float;
-    float pitch_float;
-    float roll_float;
+    float_t acceleration_z_float = 0;
+    float_t pitch_float;
+    float_t roll_float;
     FusionEuler euler;
     FusionVector linear;
     uint16_t actuator1, actuator2, actuator3, actuator4;
@@ -168,12 +169,13 @@ static void IMU_sample_task(void* arg)
     /* Initialize DAC */
     err = init_spi_DAC();
     ESP_ERROR_CHECK(err);
-    //err = config_DAC();
-    //ESP_ERROR_CHECK(err);
+    err = config_DAC();
+    ESP_ERROR_CHECK(err);
 
     /* Initialize Transform Matrix Distances */
     err = set_distances(FA_COG,RA_COG,DA_COG,PA_COG);
     ESP_ERROR_CHECK(err);
+    ESP_LOGI(TAG,"Distaces set\nF-%.3f\nR-%.3f\nD-%.3f\nP-%.3f", FA_COG, RA_COG, DA_COG, PA_COG);
 
     /* Set up ISR */
     ESP_LOGI(TAG, "Installing ISR");
@@ -182,7 +184,7 @@ static void IMU_sample_task(void* arg)
     err = gpio_isr_handler_add(IMU_PIN_INT1, imu_isr_handler, (void*) IMU_PIN_INT1);
     ESP_ERROR_CHECK(err);   
     
-/* Calibrate the rest angle and acceleration for the vehicle */
+    /* Calibrate the rest angle and acceleration for the vehicle */
     /* Read a register from the IMU to kick off interupt sampling */
     ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
     ism330dhcx_acceleration_raw_get(&ISM330DHCX_dev_ctx, data_raw_acceleration);
@@ -223,10 +225,11 @@ static void IMU_sample_task(void* arg)
     ESP_LOGI(TAG, "Pitch zero point: %.3f", pitch_zero);
     ESP_LOGI(TAG, "Roll zero point: %.3f", roll_zero);
 
-    /* Turn on Status LED */
-    gpio_set_level(STATUS_LED, 1);
 
-    vTaskDelay(1000);
+    vTaskDelay(500);
+    /* Turn on Status LED */
+    gpio_set_level(STATUS_LED2, 1);
+    gpio_set_level(STATUS_LED1, 1);
 
     /* Read a register from the IMU to kick off interupt sampling again */
     ism330dhcx_angular_rate_raw_get(&ISM330DHCX_dev_ctx, data_raw_angular_rate);
@@ -265,11 +268,11 @@ static void IMU_sample_task(void* arg)
         df.roll = euler.angle.roll;
         xQueueSendToBack(log_data_queue,&df,0);
 
-        //printf("\x1b[1F\33[2K\r%f", df.acceleration_z); //debug
+        //printf("\x1b[1F\33[2K\r%f", df.roll); //debug
 
-        if(en_actuators){// below sections not needed if motors disabled
+        if(en_actuators == true){// below sections not needed if motors disabled
             //pid
-            acceleration_z_float = PIDController_Update(&accel_z_controller, &acceleration_zero, &linear.axis.z);
+            //acceleration_z_float = PIDController_Update(&accel_z_controller, &acceleration_zero, &linear.axis.z);
             pitch_float = PIDController_Update(&pitch_controller, &pitch_zero, &euler.angle.pitch);
             roll_float = PIDController_Update(&roll_controller, &roll_zero, &euler.angle.roll);
 
@@ -351,7 +354,7 @@ esp_err_t init_spi_IMU(void){
     ISM330DHCX_dev_ctx.mdelay = platform_delay;
     ISM330DHCX_dev_ctx.handle = IMU_spi;
 
-    ESP_LOGI(init_spi_TAG, "Device configured, ready for use");
+    ESP_LOGI(init_spi_TAG, "Device driver ready for use");
 
     return(ret);
 
@@ -414,7 +417,7 @@ esp_err_t init_spi_DAC(void){
     LTC2664_dev_ctx.write_reg = DAC_write;
     LTC2664_dev_ctx.handle = DAC_spi;
 
-    ESP_LOGI(init_spi_TAG, "Device configured, ready for use");
+    ESP_LOGI(init_spi_TAG, "Device driver ready for use");
 
     return(ret);
 
@@ -425,44 +428,60 @@ esp_err_t init_spi_DAC(void){
  * @attention WILL BLOCK until FLOAT_TIME has been initialized
  */
 void init_pid_controllers(void){
-    float derivative_cutoff_hz = 10.0f;
-    float tau = 1.0f / (M_PI * derivative_cutoff_hz);
+
+    static const char TAG[] = "PID init";
+
+    float_t derivative_cutoff_hz = 100.0f;
+    float_t tau = 1.0f / (M_PI * derivative_cutoff_hz);
     /*  Limits defined for Integers as z,pitch,roll values 
         will be both positve and negative, easy to transform
         into uint16 as our DAC expects*/
-    float angleUpperLimit = INT16_MAX/40.0;
-    float angleLowerLimit = INT16_MIN/40.0;
-    float accelLowerLimit = INT16_MAX/.18;
-    float accelUpperLimit = INT16_MAX/.18;
+    float_t angleUpperLimit = INT16_MAX/50.0;
+    float_t angleLowerLimit = INT16_MIN/50.0;
+    float_t accelLowerLimit = INT16_MAX/.2;
+    float_t accelUpperLimit = INT16_MIN/.2;
     
     while (float_time == 0){
         vTaskDelay(10);
     }
 
-    //controller constants, dummy data ATM
-    accel_z_controller.Kp = 0*606.8140f;//////////disabled
-    accel_z_controller.Ki = 0*42000.0f;
-    accel_z_controller.Kd = 0*-262500.0f;
+    //controller constants, constants to be determined
+    accel_z_controller.Kp = 0*160000.0f;//////////disabled
+    accel_z_controller.Ki = 0*10000.0f;
+    accel_z_controller.Kd = 0*30000.0f;
     accel_z_controller.tau = tau;
     accel_z_controller.limMin = accelLowerLimit;
     accel_z_controller.limMax = accelUpperLimit;
     accel_z_controller.T = float_time;
 
-    roll_controller.Kp = -16.3835f*3;
-    roll_controller.Ki = 0*-30.0f;
-    roll_controller.Kd = 2.0f;
+    ESP_LOGI(TAG, "Acceleration Controller Kp: %.3f", accel_z_controller.Kp );
+    ESP_LOGI(TAG, "Ki: %.3f", accel_z_controller.Ki );
+    ESP_LOGI(TAG, "Kd: %.3f", accel_z_controller.Kd);
+
+    roll_controller.Kp = -5.0f;
+    roll_controller.Ki = -70.0f;
+    roll_controller.Kd = -10.0f;
     roll_controller.tau = tau;
+    
     roll_controller.limMin = angleLowerLimit;
     roll_controller.limMax = angleUpperLimit;
     roll_controller.T = float_time;
 
-    pitch_controller.Kp = -16.3835f*7;
-    pitch_controller.Ki = 0*-50.0f;
-    pitch_controller.Kd = 3.5f;
+    ESP_LOGI(TAG, "Roll Controller Kp: %.3f", roll_controller.Kp );
+    ESP_LOGI(TAG, "Ki: %.3f", roll_controller.Ki );
+    ESP_LOGI(TAG, "Kd: %.3f", roll_controller.Kd);
+
+    pitch_controller.Kp = -5.0f;
+    pitch_controller.Ki = -70.0f;
+    pitch_controller.Kd = -10.0f;
     pitch_controller.tau = tau;
     pitch_controller.limMin = angleLowerLimit;
     pitch_controller.limMax = angleUpperLimit;
     pitch_controller.T = float_time;
+    
+    ESP_LOGI(TAG, "Pitch Controller Kp: %.3f", pitch_controller.Kp );
+    ESP_LOGI(TAG, "Ki: %.3f", pitch_controller.Ki );
+    ESP_LOGI(TAG, "Kd: %.3f", pitch_controller.Kd);
 
     PIDController_Init(&accel_z_controller);
     PIDController_Init(&roll_controller);
@@ -548,14 +567,14 @@ esp_err_t config_IMU(void){
 esp_err_t DAC_find_offset(ltc2664_DACS_t dac){
     esp_err_t ret;
     
-    static const char TAG[] = "DAC Find Offset";
+    static const char TAG[] = "DAC";
 
     //zero out the offsets used in writing to the dac
     int32_t signed_offset = 0;
     ltc2664_save_offset(dac, &signed_offset);
 
     uint16_t input = UINT16_MAX/2;
-    uint16_t adjuster = input/2;
+    uint16_t adjuster = input/64;
     //initialize the dac to midscale
     ret = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, dac, &input);
     //assign mux to match selected dac
@@ -565,14 +584,14 @@ esp_err_t DAC_find_offset(ltc2664_DACS_t dac){
     gpio_set_level(MUX_PIN_A1, (mux[dac] & 0x0002) >> 1);
     //narrow the adjuster while moving the input value up or down according to the comparator input
     while(adjuster > 2){
-        vTaskDelay(100); //allow the DAC, Comparator, and amplifier to settle (set to have a single dac calibrated in less than 1 second)(70)
+        vTaskDelay(15); //allow the DAC, Comparator, and amplifier to settle (set to have a single dac calibrated in less than 1 second)(70)
         if(gpio_get_level(COMPARATOR_PIN)){ //may need to flip this condition to match actual amplifier response.
             input -= adjuster;
-            ESP_LOGI(TAG, "high input");
+            //ESP_LOGI(TAG, "high input"); //debug
         }
         else{
             input += adjuster;
-            ESP_LOGI(TAG, "low input");
+            //ESP_LOGI(TAG, "low input"); //debug
         }
         ret = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, dac, &input);
         if(ret != ESP_OK) return ret;
@@ -582,19 +601,24 @@ esp_err_t DAC_find_offset(ltc2664_DACS_t dac){
     //save that offset to be used in DAC writing function;
     ltc2664_save_offset(dac, &signed_offset);
 
+    ESP_LOGI(TAG, "DAC %i zero code: %i", dac, input);
+
     return ret;
 }
 
 /**
- * 
+ * @brief All setup for DAC goes in this function, includes zero-offset finding
  */
 esp_err_t config_DAC(void){
+    static const char TAG[] = "DAC";
+    ESP_LOGI(TAG, "Calibrating Motor Amplifiers");
     esp_err_t ret;
     for(int dac = 0; dac < 4; dac++){ //brute force the possible dacs found in ltc2664_DACS_t
         ret = DAC_find_offset(dac); //find offsets for all of them.
         if(ret != ESP_OK) return ret;
     }
     return ret;
+    ESP_LOGI(TAG, "Calibration complete, DAC ready");
 }
 
 void app_main(void){
@@ -603,7 +627,7 @@ void app_main(void){
     #if defined DAC_TEST
     //test dac
     ESP_LOGI(TAG, "Testing DAC: ");
-    float_t rad = 030;
+    float_t rad = 0;
     uint16_t dac_input = 0;
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -617,21 +641,21 @@ void app_main(void){
     err = config_DAC();
     ESP_ERROR_CHECK(err);
     ESP_LOGI(TAG, "Done Calibration");
-    while (1) //testing calibration
-    {
-        vTaskDelay(1000);
-    }
-    
-    // while(1){ //sine wave test
-    //     rad += M_2_PI/20.0;
-    //     //if (rad > M_2_PI) rad = 0.0001;
-    //     dac_input = (uint16_t)32000 * (1 + sinf(rad));
-    //     err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &dac_input);
-    //     err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &dac_input);
-    //     err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &dac_input);
-    //     err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &dac_input);
-    //     platform_delay(10);
+    // while (1) //testing calibration
+    // {
+    //     vTaskDelay(1000);
     // }
+    
+    while(1){ //sine wave test
+        rad += M_2_PI/200.0;
+        //if (rad > M_2_PI) rad = 0.0001;
+        dac_input = (uint16_t)32000 * (1 + 0.5*sinf(rad));
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &dac_input);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &dac_input);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_1, &dac_input);
+        err = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &dac_input);
+        platform_delay(10);
+    }
 
 
     // uint16_t n_two_halfV = 16000;
@@ -709,46 +733,45 @@ void app_main(void){
     gpio_config(&io_conf);
 
     /* Read boot config switches, write global bools */
-    if(gpio_get_level(MODE_SW_EN_LOGGING)) en_logging = true;
-    if(gpio_get_level(MODE_SW_EN_ACTUATOR)) en_actuators = true;
+    if(gpio_get_level(MODE_SW_EN_LOGGING) == 1) en_logging = true;
+    if(gpio_get_level(MODE_SW_EN_ACTUATOR) == 1) en_actuators = true;
 
     /* Turn off Status LED, not ready yet */
-    gpio_set_level(STATUS_LED, 0);
+    gpio_set_level(STATUS_LED2, 0);    
+    gpio_set_level(STATUS_LED1, 0);
 
     /* Create Queue for transfering data to SD card function */
     log_data_queue = xQueueCreate(7000, sizeof(log_data_t));
-
-    /* Initialize SD Card*/
-    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .max_files = 5,
-        .allocation_unit_size = 16 * 1024
-    };
-    sdmmc_card_t *card;
-    const char mount_point[] = MOUNT_POINT;
-    ESP_LOGI(TAG, "Initializing SD card");
-
-    ESP_LOGI(TAG, "Using SDMMC peripheral");
-
-    //Increase the speed here as much as possible
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = 45000;
-
-    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.width = 4;
-    slot_config.clk = SD_PIN_CLK;
-    slot_config.cmd = SD_PIN_CMD;
-    slot_config.d0 = SD_PIN_D0;
-    slot_config.d1 = SD_PIN_D1;
-    slot_config.d2 = SD_PIN_D2;
-    slot_config.d3 = SD_PIN_D3;
-    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
 
     /* Start tasks for IMU sampling*/
     ESP_LOGI(TAG, "Starting IMU Task");
     xTaskCreatePinnedToCore(IMU_sample_task, "IMU_sample_task", 65536, NULL, 9, &IMU_TASK, APP_CPU_NUM);
 
-    if(en_logging){//do not continue if logging is not enabled
+    if(en_logging == true){//do not continue if logging is not enabled
+        /* Initialize SD Card*/
+        esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+            .max_files = 5,
+            .allocation_unit_size = 16 * 1024
+        };
+        sdmmc_card_t *card;
+        const char mount_point[] = MOUNT_POINT;
+        ESP_LOGI(TAG, "Initializing SD card");
+
+        ESP_LOGI(TAG, "Using SDMMC peripheral");
+
+        //Increase the speed here as much as possible
+        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+        host.max_freq_khz = 45000;
+
+        sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+        slot_config.width = 4;
+        slot_config.clk = SD_PIN_CLK;
+        slot_config.cmd = SD_PIN_CMD;
+        slot_config.d0 = SD_PIN_D0;
+        slot_config.d1 = SD_PIN_D1;
+        slot_config.d2 = SD_PIN_D2;
+        slot_config.d3 = SD_PIN_D3;
+        slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
         ESP_LOGI(TAG, "Mounting filesystem");
         err = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
@@ -834,22 +857,33 @@ void app_main(void){
                         }
                     }
                     f = fopen(file_name, "a");
-                    //printf("%i\n",(int)uxQueueMessagesWaiting(log_data_queue)); //report number of data points waiting to be stored
+                    printf("%i\n",(int)uxQueueMessagesWaiting(log_data_queue)); //report number of data points waiting to be stored
                 }
             }
-            else{
+            else
+            {
                 vTaskDelay(1);
             }
         }
     }//logging enabled if statement
     else{//logging disabled, do nothing on this core
-        while(1) vTaskDelay(1000);//wait forever
+        while(1){
+            log_data_t log_data;
+            if(xQueueReceive(log_data_queue,&log_data, portMAX_DELAY)){
+                printf("\r%i", (int)uxQueueMessagesWaiting(log_data_queue)); //debug
+            }
+            else
+            {
+                vTaskDelay(1);
+            }
+
+
+        } 
+        //vTaskDelay(1000);//wait forever
     }
     #endif
 }
 
-
-#ifndef SD_TEST
 
 static void platform_delay(uint32_t ms)
 {
@@ -937,5 +971,3 @@ static int32_t DAC_write(void *handle, ltc2664_DACS_t dac, uint8_t command, cons
 
     return (int)ret;
 }
-
-#endif

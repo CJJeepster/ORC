@@ -57,14 +57,12 @@ void transform(uint16_t *act1, uint16_t *act2, uint16_t *act3, uint16_t *act4, f
     float_t _b_fZ = _b_2ab * (*fZ);
     float_t _a_fZ = _a_2ab * (*fZ);
     float_t _p_fT = _1_2ab * (*fTheta);
-    float_t _n_fT = -1.0 * _p_fT;
     float_t _p_fP = _1_2cd * (*fPhi);
-    float_t _n_fP = -1.0 * _p_fP;
     //perform addition to find each actuator force and zero reference the result.
-    float_t inter_act1 = _b_fZ + _n_fT + _p_fP + 32768.0f;
-    float_t inter_act2 = _b_fZ + _n_fT + _n_fP + 32768.0f;
+    float_t inter_act1 = _b_fZ - _p_fT + _p_fP + 32768.0f;
+    float_t inter_act2 = _b_fZ - _p_fT - _p_fP + 32768.0f;
     float_t inter_act3 = _a_fZ + _p_fT + _p_fP + 32768.0f;
-    float_t inter_act4 = _a_fZ + _p_fT + _n_fP + 32768.0f;
+    float_t inter_act4 = _a_fZ + _p_fT - _p_fP + 32768.0f;
 
     *act1 = (uint16_t)inter_act1;
     *act2 = (uint16_t)inter_act2;
