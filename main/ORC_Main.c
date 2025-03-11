@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_intr_types.h"
+#include "esp_random.h"
 
 #include "Fusion.h"
 #include "LTC2664_reg.h"
@@ -30,7 +31,7 @@
 #define GPIO_MUX_PINS   ((1ULL<<MUX_PIN_A0) | (1ULL<<MUX_PIN_A1))
 #define GPIO_COMP_PINS  (1ULL<<COMPARATOR_PIN)
 
-#define CACHE_SIZE      8192*4    //bytes
+#define CACHE_SIZE      8192*8   //bytes
 #define MOUNT_POINT     "/sdcard"
 #define SD_PIN_D3       13
 #define SD_PIN_D2       12
@@ -121,9 +122,8 @@ static bool en_actuators = false;
  * @brief Capture interupt from IMU and tell the IMU_sample_task there's data avalible
  */
 static void IRAM_ATTR imu_isr_handler(void* arg){
-    
-    vTaskNotifyGiveFromISR(IMU_TASK,NULL);
-
+    BaseType_t higherPriorityTask = pdTRUE;
+    vTaskNotifyGiveFromISR(IMU_TASK,&higherPriorityTask);
 }
 
 /**
@@ -176,13 +176,6 @@ static void IMU_sample_task(void* arg)
     err = set_distances(FA_COG,RA_COG,DA_COG,PA_COG);
     ESP_ERROR_CHECK(err);
     ESP_LOGI(TAG,"Distaces set\nF-%.3f\nR-%.3f\nD-%.3f\nP-%.3f", FA_COG, RA_COG, DA_COG, PA_COG);
-
-    /* Set up ISR */
-    ESP_LOGI(TAG, "Installing ISR");
-    err = gpio_install_isr_service(0);
-    ESP_ERROR_CHECK(err);
-    err = gpio_isr_handler_add(IMU_PIN_INT1, imu_isr_handler, (void*) IMU_PIN_INT1);
-    ESP_ERROR_CHECK(err);   
     
     /* Calibrate the rest angle and acceleration for the vehicle */
     /* Read a register from the IMU to kick off interupt sampling */
@@ -202,15 +195,15 @@ static void IMU_sample_task(void* arg)
         
         //convert to dps for use in Fusion
         //uses full scale of 500dps for int to float conversion
-        const FusionVector gyroscope = {{(float_t)data_raw_angular_rate[0] * 0.0175,
+        const FusionVector gyroscope = {{(float_t)data_raw_angular_rate[0] * 0.0175f,
                                         (float_t)data_raw_angular_rate[1] * 0.0175f,
                                         (float_t)data_raw_angular_rate[2] * 0.0175f}};
 
         //convert to g for use in Fusion 
-        //uses full scale of 2 g for int to float conversion
-        const FusionVector accelerometer = {{(float_t)data_raw_acceleration[0] * 0.000061f,
-                                        (float_t)data_raw_acceleration[1] * 0.000061f,
-                                        (float_t)data_raw_acceleration[2] * 0.000061f}};
+        //uses full scale of 4 g for int to float conversion
+        const FusionVector accelerometer = {{(float_t)data_raw_acceleration[0] * 0.000122f,
+                                        (float_t)data_raw_acceleration[1] * 0.000122f,
+                                        (float_t)data_raw_acceleration[2] * 0.000122f}};
 
         FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, float_time);
         fusionFlags = FusionAhrsGetFlags(&ahrs);
@@ -226,8 +219,8 @@ static void IMU_sample_task(void* arg)
     ESP_LOGI(TAG, "Roll zero point: %.3f", roll_zero);
 
 
-    vTaskDelay(500);
-    /* Turn on Status LED */
+    vTaskDelay(200);
+    /* Turn on Status LED */+
     gpio_set_level(STATUS_LED2, 1);
     gpio_set_level(STATUS_LED1, 1);
 
@@ -236,7 +229,7 @@ static void IMU_sample_task(void* arg)
     ism330dhcx_acceleration_raw_get(&ISM330DHCX_dev_ctx, data_raw_acceleration);
     ESP_LOGI(TAG,"Sampling started");
 
-    for (;;) {
+    while(1){
         
         ulTaskNotifyTake(pdFALSE,portMAX_DELAY);
         //when IMU_PIN_INT1 rising edge
@@ -248,15 +241,15 @@ static void IMU_sample_task(void* arg)
         
         //convert to dps for use in Fusion
         //uses full scale of 500dps for int to float conversion
-        const FusionVector gyroscope = {{(float_t)data_raw_angular_rate[0] * 0.0175,
+        const FusionVector gyroscope = {{(float_t)data_raw_angular_rate[0] * 0.0175f,
                                         (float_t)data_raw_angular_rate[1] * 0.0175f,
                                         (float_t)data_raw_angular_rate[2] * 0.0175f}};
 
         //convert to g for use in Fusion 
-        //uses full scale of 2 g for int to float conversion
-        const FusionVector accelerometer = {{(float_t)data_raw_acceleration[0] * 0.000061f,
-                                        (float_t)data_raw_acceleration[1] * 0.000061f,
-                                        (float_t)data_raw_acceleration[2] * 0.000061f}};
+        //uses full scale of 4 g for int to float conversion
+        const FusionVector accelerometer = {{(float_t)data_raw_acceleration[0] * 0.000122f,
+                                        (float_t)data_raw_acceleration[1] * 0.000122f,
+                                        (float_t)data_raw_acceleration[2] * 0.000122f}};
 
         FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, float_time);
         euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
@@ -268,13 +261,15 @@ static void IMU_sample_task(void* arg)
         df.roll = euler.angle.roll;
         xQueueSendToBack(log_data_queue,&df,0);
 
-        //printf("\x1b[1F\33[2K\r%f", df.roll); //debug
+        //printf("\x1b[1F\33[2K\r%f", df.acceleration_z); //debug
 
         if(en_actuators == true){// below sections not needed if motors disabled
             //pid
-            //acceleration_z_float = PIDController_Update(&accel_z_controller, &acceleration_zero, &linear.axis.z);
+            acceleration_z_float = PIDController_Update(&accel_z_controller, &acceleration_zero, &linear.axis.z);
             pitch_float = PIDController_Update(&pitch_controller, &pitch_zero, &euler.angle.pitch);
             roll_float = PIDController_Update(&roll_controller, &roll_zero, &euler.angle.roll);
+
+            //printf("\r%f", acceleration_z_float); //debug
 
             //transform
             transform(&actuator1,&actuator2,&actuator3,&actuator4,&acceleration_z_float,&pitch_float,&roll_float);
@@ -286,11 +281,9 @@ static void IMU_sample_task(void* arg)
             ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_2, &actuator2);
             ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_0, &actuator3);
             ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, LTC2664_DAC_3, &actuator4);
-            #if defined TIMING_TESTING
-            gpio_set_level(TIMING_OUT, 0);
-            #endif
+
         }
-        vTaskDelay(1); //yield so watchdog may be fed
+        //vTaskDelay(1); //yield so watchdog may be fed
         
     }
 }
@@ -335,7 +328,7 @@ esp_err_t init_spi_IMU(void){
     devcfg->duty_cycle_pos =    128;//50%/50% duty cycle
     devcfg->cs_ena_pretrans =   0;//CS timed with clock
     devcfg->cs_ena_posttrans =  0;
-    devcfg->clock_speed_hz=     9*1000*1000; //10Mhz
+    devcfg->clock_speed_hz=     10*1000*1000; //10Mhz
     devcfg->input_delay_ns =    0;
     devcfg->spics_io_num=       IMU_PIN_NUM_CS;
     devcfg->flags =             SPI_DEVICE_NO_DUMMY; //disable high freq(>100MHZ) workaround
@@ -400,7 +393,7 @@ esp_err_t init_spi_DAC(void){
     devcfg->duty_cycle_pos =    128; //50%/50% duty cycle
     devcfg->cs_ena_pretrans =   0;//CS timed with clock
     devcfg->cs_ena_posttrans =  0;
-    devcfg->clock_speed_hz=     45*1000*1000;
+    devcfg->clock_speed_hz=     50*1000*1000;
     devcfg->input_delay_ns =    0;
     devcfg->spics_io_num=       DAC_PIN_NUM_CS;
     devcfg->flags =             SPI_DEVICE_NO_DUMMY; //disable high freq(>100MHZ) workaround
@@ -438,17 +431,17 @@ void init_pid_controllers(void){
         into uint16 as our DAC expects*/
     float_t angleUpperLimit = INT16_MAX/50.0;
     float_t angleLowerLimit = INT16_MIN/50.0;
-    float_t accelLowerLimit = INT16_MAX/.2;
-    float_t accelUpperLimit = INT16_MIN/.2;
+    float_t accelUpperLimit = INT16_MAX/.2;
+    float_t accelLowerLimit = INT16_MIN/.2;
     
     while (float_time == 0){
         vTaskDelay(10);
     }
 
     //controller constants, constants to be determined
-    accel_z_controller.Kp = 0*160000.0f;//////////disabled
+    accel_z_controller.Kp = 40000.0f;//////////disabled
     accel_z_controller.Ki = 0*10000.0f;
-    accel_z_controller.Kd = 0*30000.0f;
+    accel_z_controller.Kd = -1500.0f;
     accel_z_controller.tau = tau;
     accel_z_controller.limMin = accelLowerLimit;
     accel_z_controller.limMax = accelUpperLimit;
@@ -458,9 +451,9 @@ void init_pid_controllers(void){
     ESP_LOGI(TAG, "Ki: %.3f", accel_z_controller.Ki );
     ESP_LOGI(TAG, "Kd: %.3f", accel_z_controller.Kd);
 
-    roll_controller.Kp = -5.0f;
-    roll_controller.Ki = -70.0f;
-    roll_controller.Kd = -10.0f;
+    roll_controller.Kp = 0*-5.0f;
+    roll_controller.Ki = 0*-70.0f;
+    roll_controller.Kd = 0*-10.0f;
     roll_controller.tau = tau;
     
     roll_controller.limMin = angleLowerLimit;
@@ -471,9 +464,9 @@ void init_pid_controllers(void){
     ESP_LOGI(TAG, "Ki: %.3f", roll_controller.Ki );
     ESP_LOGI(TAG, "Kd: %.3f", roll_controller.Kd);
 
-    pitch_controller.Kp = -5.0f;
-    pitch_controller.Ki = -70.0f;
-    pitch_controller.Kd = -10.0f;
+    pitch_controller.Kp = 0*-5.0f;
+    pitch_controller.Ki = 0*-70.0f;
+    pitch_controller.Kd = 0*-10.0f;
     pitch_controller.tau = tau;
     pitch_controller.limMin = angleLowerLimit;
     pitch_controller.limMax = angleUpperLimit;
@@ -528,28 +521,35 @@ esp_err_t config_IMU(void){
     /* Enable Block Data Update */
     ism330dhcx_block_data_update_set(&ISM330DHCX_dev_ctx, PROPERTY_DISABLE);
     /* Set Output Data Rate */
-    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_6667Hz);
-    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_6667Hz);
+    ism330dhcx_xl_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_XL_ODR_3332Hz);
+    ism330dhcx_gy_data_rate_set(&ISM330DHCX_dev_ctx, ISM330DHCX_GY_ODR_3332Hz);
     /* Set full scale */
-    ism330dhcx_xl_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_2g);
+    ism330dhcx_xl_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_4g);
     ism330dhcx_gy_full_scale_set(&ISM330DHCX_dev_ctx, ISM330DHCX_500dps);
     /* Set Power Mode */
     ism330dhcx_xl_power_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_HIGH_PERFORMANCE_MD);
     ism330dhcx_gy_power_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_GY_HIGH_PERFORMANCE);
     /* Set Interupt 1 Output mode */
-    ism330dhcx_pin_mode_set(&ISM330DHCX_dev_ctx,ISM330DHCX_PUSH_PULL);
-    ism330dhcx_int_notification_set(&ISM330DHCX_dev_ctx,ISM330DHCX_BASE_LATCHED_EMB_PULSED);
+    ism330dhcx_pin_mode_set(&ISM330DHCX_dev_ctx, ISM330DHCX_PUSH_PULL);
+    ism330dhcx_int_notification_set(&ISM330DHCX_dev_ctx, ISM330DHCX_BASE_LATCHED_EMB_PULSED);
     /* Set inturput type (interupt on drdy for accelerometer. in sync w/ gyroscope) */
     ism330dhcx_pin_int1_route_t pin_int1_route;
     ism330dhcx_pin_int1_route_get(&ISM330DHCX_dev_ctx, &pin_int1_route);
-    pin_int1_route.int1_ctrl.int1_drdy_xl = PROPERTY_ENABLE;
+    pin_int1_route.int1_ctrl.int1_drdy_xl   = PROPERTY_ENABLE;
+    pin_int1_route.int1_ctrl.int1_boot      = PROPERTY_DISABLE;
+    pin_int1_route.int1_ctrl.int1_cnt_bdr   = PROPERTY_DISABLE;
+    pin_int1_route.int1_ctrl.den_drdy_flag  = PROPERTY_DISABLE;
+    pin_int1_route.int1_ctrl.int1_drdy_g    = PROPERTY_DISABLE;
+    pin_int1_route.int1_ctrl.int1_fifo_full = PROPERTY_DISABLE;
+    pin_int1_route.int1_ctrl.int1_fifo_ovr  = PROPERTY_DISABLE;
+    pin_int1_route.int1_ctrl.int1_fifo_th   = PROPERTY_DISABLE;
     ism330dhcx_pin_int1_route_set(&ISM330DHCX_dev_ctx, &pin_int1_route);
     
     /* Gather frequency data from IMU */
     uint8_t freq;
     ism330dhcx_read_reg(&ISM330DHCX_dev_ctx,ISM330DHCX_INTERNAL_FREQ_FINE,&freq,1);
     /* Convert this raw data to seconds */
-    float_time = 1.0/(6666.6666666666666666+(10.0*freq)); //1.0 coresponds to ODR_Coeff page 60 of ST app. note AN5398
+    float_time = 2.0/(6666.6666666666666666+(10.0*freq)); //1.0 coresponds to ODR_Coeff page 60 of ST app. note AN5398
     ESP_LOGI(Config_IMU_TAG, "Sample Period: %0.9f", float_time);
 
     /* Reset Timestamp */
@@ -701,7 +701,7 @@ void app_main(void){
     io_conf.pin_bit_mask = GPIO_INT_PIN_SEL;
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = 0;
-    io_conf.pull_down_en = 1;
+    io_conf.pull_down_en = 0;
     gpio_config(&io_conf);
     /* Configure Mux Address Pins */
     io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -733,9 +733,14 @@ void app_main(void){
     gpio_config(&io_conf);
 
     /* Read boot config switches, write global bools */
-    if(gpio_get_level(MODE_SW_EN_LOGGING) == 1) en_logging = true;
-    if(gpio_get_level(MODE_SW_EN_ACTUATOR) == 1) en_actuators = true;
-
+    if(gpio_get_level(MODE_SW_EN_LOGGING) == 1){
+        ESP_LOGI(TAG,"Logging Enabled");
+        en_logging = true; 
+    }
+    if(gpio_get_level(MODE_SW_EN_ACTUATOR) == 1){ 
+        ESP_LOGI(TAG,"Actuators Enabled");
+        en_actuators = true;
+    }
     /* Turn off Status LED, not ready yet */
     gpio_set_level(STATUS_LED2, 0);    
     gpio_set_level(STATUS_LED1, 0);
@@ -745,7 +750,14 @@ void app_main(void){
 
     /* Start tasks for IMU sampling*/
     ESP_LOGI(TAG, "Starting IMU Task");
-    xTaskCreatePinnedToCore(IMU_sample_task, "IMU_sample_task", 65536, NULL, 9, &IMU_TASK, APP_CPU_NUM);
+    xTaskCreatePinnedToCore(IMU_sample_task, "IMU_sample_task", 4096, NULL, 9, &IMU_TASK, APP_CPU_NUM);
+
+        /* Set up ISR */
+        ESP_LOGI(TAG, "Installing ISR");
+        err = gpio_install_isr_service(0);
+        ESP_ERROR_CHECK(err);
+        err = gpio_isr_handler_add(IMU_PIN_INT1, imu_isr_handler, (void*) IMU_PIN_INT1);
+        ESP_ERROR_CHECK(err);   
 
     if(en_logging == true){//do not continue if logging is not enabled
         /* Initialize SD Card*/
@@ -802,7 +814,7 @@ void app_main(void){
         }
 
         /* Log title block*/
-        int written_length = snprintf(temp_string, 32, "Log #: %i\n", rand() % 9999);
+        int written_length = snprintf(temp_string, 32, "Log #: %li\n", esp_random() % 10000);
         memcpy(cache, temp_string, written_length);
         uint32_t lines = written_length;
         if(en_actuators){
@@ -813,7 +825,7 @@ void app_main(void){
         }
         memcpy(cache + (lines), temp_string, written_length);
         lines += written_length;
-        written_length = snprintf(temp_string, 32, "Acceleration, Pitch, Roll");
+        written_length = snprintf(temp_string, 32, "Acceleration, Pitch, Roll\n");
         memcpy(cache + (lines), temp_string, written_length);
         lines += written_length;
 
@@ -826,6 +838,10 @@ void app_main(void){
         xQueueReset(log_data_queue);
         while(1){
             if(xQueueReceive(log_data_queue,&log_data, 0)){
+                // if (lines % 100 == 0){
+                //     printf("\r%f", log_data.roll); //debug
+                // }
+                //printf("\r%f", log_data.roll); //debug
                 written_length = snprintf(temp_string, 32, "%.4f, %.4f, %.4f\n", log_data.acceleration_z, log_data.pitch, log_data.roll);
                 //printf("%i\n",(int)(cache + 32*lines));
                 memcpy(cache + (lines), temp_string, written_length);
@@ -837,7 +853,7 @@ void app_main(void){
                     fclose(f);
                     if(gpio_get_level(MODE_SW_START_LOG) == 0){
                         /* Log title block*/
-                        written_length = snprintf(temp_string, 32, "Log #: %i\n", rand() % 9999);
+                        written_length = snprintf(temp_string, 32, "Log #: %li\n", esp_random() % 10000);
                         memcpy(cache, temp_string, written_length);
                         lines += written_length;
                         if(en_actuators){
@@ -848,16 +864,17 @@ void app_main(void){
                         }
                         memcpy(cache + (lines), temp_string, written_length);
                         lines += written_length;
-                        written_length = snprintf(temp_string, 32, "Acceleration, Pitch, Roll");
+                        written_length = snprintf(temp_string, 32, "Acceleration, Pitch, Roll\n");
                         memcpy(cache + (lines), temp_string, written_length);
                         lines += written_length;
                         //wait till next log should begin
                         while(gpio_get_level(MODE_SW_START_LOG) == 0){
                             vTaskDelay(100);
                         }
+                        xQueueReset(log_data_queue);
                     }
                     f = fopen(file_name, "a");
-                    printf("%i\n",(int)uxQueueMessagesWaiting(log_data_queue)); //report number of data points waiting to be stored
+                    //printf("\n%i\n",(int)uxQueueMessagesWaiting(log_data_queue)); //report number of data points waiting to be stored //debug
                 }
             }
             else
@@ -868,14 +885,14 @@ void app_main(void){
     }//logging enabled if statement
     else{//logging disabled, do nothing on this core
         while(1){
-            log_data_t log_data;
-            if(xQueueReceive(log_data_queue,&log_data, portMAX_DELAY)){
-                printf("\r%i", (int)uxQueueMessagesWaiting(log_data_queue)); //debug
-            }
-            else
-            {
+            // log_data_t log_data;
+            // if(xQueueReceive(log_data_queue,&log_data, 0)){
+            //     printf("\r%f", log_data.roll); //debug
+            // }
+            // else
+            // {
                 vTaskDelay(1);
-            }
+            //}
 
 
         } 
