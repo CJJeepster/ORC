@@ -1,0 +1,5 @@
+1. If the number of polygons in the source file exceeds 100,000, the conversion service will automatically reduce the number to less than 100,000 to ensure the availability of the STP file. We will export two standard STP files, AP203 and AP242, please use them as needed.
+
+2. Stp is already a solid format, please do not convert it to Solidworks, UG and other formats, please use Solidworks, UG to import directly.
+
+3. Please use Solidworks to open the AP242 format Stp file, which is slow to load. It usually takes 60 minutes to open a 100M file. Please wait patiently.

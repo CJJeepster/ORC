@@ -1,0 +1,26 @@
+Revisions Needed:
+------------------------------------------------
+
+Main board:
+*RX/TX from USB-UART bridge connected to RX/TX on ESP32 respectively, should be connected to TX/RX on ESP32 respectively.
+*SDO from ESP32 connected to SDO on DAC. Should be connected to SDI on DAC.
+*LED connected to IMU Interupt 1 not needed.
+*C11 & R14 Designators need position swapped.
+*XT60 battery connectors wrong polarity. Can be installed on bottom of board for temporary relief.
+*Recommend PTC fuses on motor outputs for current limiting over time. Protects motor from being burned out. 
+*Terminals used for motor outputs rather small. Recommend larger terminal or connector, perhaps XT30
+*Excessive audible ringing heard during USB transfers. Needs investigation.
+*With button, switch, and LED functions now defined, silkscreen labels are in order.
+*Battery voltage cutoff circutry would be very nice to have.
+*Fan Header(s) for cooling motor amplifiers would be nice to have.
+
+
+
+Motor Amplifier:
+*Feedback resistors not matched well to avalible values. Recommend calibration potentiometer to alieviate software calibration necessity.
+
+
+Other:
+*Custom Board for IMU could reduce size and improve wiring connection.
+*If pursuing commercial board, smaller components and double sided board would be appropriate. Perhaps integrated amplifiers, rather than daughter cards.
+*USB-C would be welcome modernization
