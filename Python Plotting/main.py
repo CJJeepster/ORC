@@ -37,6 +37,16 @@ with open(filename, "r") as file:
                     logs[key]["Time [s]"].append(len(logs[key]["Time [s]"]) * interval)
                 except ValueError:
                     continue  # Skip invalid rows
+            elif row[0].startswith("Log Paused"): #special mark when there is a break in the log
+                try:
+                    key = f"{current_log} - {actuator_status}"
+                    logs[key]["Acceleration [g]"].append(300)
+                    logs[key]["Pitch [°]"].append(3000)
+                    logs[key]["Roll [°]"].append(3000)
+                    logs[key]["Time [s]"].append(len(logs[key]["Time [s]"]) * interval)
+                except ValueError:
+                    continue  # Skip invalid rows
+
 
 # Function to apply median filter
 def filter_data(data):
@@ -54,7 +64,7 @@ def plot_data(logs, data_key, title, filename):
     fig, ax = plt.subplots(figsize=(38.4, 21.6), dpi=100)  # 4K resolution
     stats_texts = []
     for key, data in logs.items():
-        filtered = filter_data(data[data_key])
+        filtered = filter_data(data[data_key]) #filter will help ignore new log marks
         rms, min_val, max_val = data_stats(filtered)
         ax.plot(data["Time [s]"], filtered, label=key, linestyle="-", marker="")
         stats_texts.append(f"{key}\nRMS: {rms:.5f}\nMin: {min_val:.5f}\nMax: {max_val:.5f}")
@@ -79,8 +89,13 @@ def stable_derivative_plot(logs, data_key, title, filename):
     fig, ax = plt.subplots(figsize=(38.4, 21.6), dpi=100)  # 4K resolution
     stats_texts = []
     for key, data in logs.items():
+        unstable_indices = [i for i, x in enumerate(data[data_key]) if x == 300]#find where unstable derivatives can occur (log start and stop)
         filtered = filter_data(data[data_key])
         grad = np.gradient(filtered)
+        for i in unstable_indices:#remove the unstable derivatives
+            grad[i-1] = 0
+            grad[i] = 0
+            grad[i+1] = 0
         rms, min_val, max_val = data_stats(grad)
         ax.plot(data["Time [s]"], grad, label=key, linestyle="-", marker="")
         stats_texts.append(f"{key}\nRMS: {rms:.5f}\nMin: {min_val:.5f}\nMax: {max_val:.5f}")
@@ -106,9 +121,9 @@ def stable_derivative_plot(logs, data_key, title, filename):
 
 
 # Generate separate plots
-stable_derivative_plot(logs, "Acceleration [g]", "Median Filtered (ks=11) Computed Jerk", "jerk_4k_terrain.png")
-plot_data(logs, "Acceleration [g]", "Median Filtered (ks=11) Acceleration Data", "acceleration_4k_terrain.png")
-plot_data(logs, "Pitch [°]", "Median Filtered (ks=11) Pitch Data", "pitch_4k_terrain.png")
-plot_data(logs, "Roll [°]", "Median Filtered (ks=11) Roll Data", "roll_4k_terrain.png")
+stable_derivative_plot(logs, "Acceleration [g]", "Median Filtered (ks=15) Computed Jerk", "jerk_4k_camber.png")
+plot_data(logs, "Acceleration [g]", "Median Filtered (ks=15) Acceleration Data", "acceleration_4k_camber.png")
+plot_data(logs, "Pitch [°]", "Median Filtered (ks=15) Pitch Data", "pitch_4k_camber.png")
+plot_data(logs, "Roll [°]", "Median Filtered (ks=15) Roll Data", "roll_4k_camber.png")
 
 print("Plots saved as 4K images with statistics.")
