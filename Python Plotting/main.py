@@ -106,9 +106,9 @@ def stable_derivative_plot(logs, data_key, title, filename):
 
 
 # Generate separate plots
-stable_derivative_plot(logs, "Acceleration [g]", "Median Filtered (ks=11) Computed Jerk", "jerk_4k.png")
-plot_data(logs, "Acceleration [g]", "Median Filtered (ks=11) Acceleration Data", "acceleration_4k.png")
-plot_data(logs, "Pitch [°]", "Median Filtered (ks=11) Pitch Data", "pitch_4k.png")
-plot_data(logs, "Roll [°]", "Median Filtered (ks=11) Roll Data", "roll_4k.png")
+stable_derivative_plot(logs, "Acceleration [g]", "Median Filtered (ks=11) Computed Jerk", "jerk_4k_terrain.png")
+plot_data(logs, "Acceleration [g]", "Median Filtered (ks=11) Acceleration Data", "acceleration_4k_terrain.png")
+plot_data(logs, "Pitch [°]", "Median Filtered (ks=11) Pitch Data", "pitch_4k_terrain.png")
+plot_data(logs, "Roll [°]", "Median Filtered (ks=11) Roll Data", "roll_4k_terrain.png")
 
 print("Plots saved as 4K images with statistics.")

@@ -141,9 +141,9 @@ static void IMU_sample_task(void* arg)
     FusionAhrsSettings * const ahrs_settings = malloc(sizeof(FusionAhrsSettings));
     ahrs_settings->accelerationRejection =  10; //degrees
     ahrs_settings->gyroscopeRange =         500;//dps
-    ahrs_settings->gain =                   .5; //influence of gyroscope
+    ahrs_settings->gain =                   0.5f; //influence of gyroscope
     ahrs_settings->convention =             FusionConventionEnu; //earth axes convention (consistent with ISM330DHCX)
-    ahrs_settings->recoveryTriggerPeriod =  0;//5/float_time; //approx 5 second recovery trigger period
+    ahrs_settings->recoveryTriggerPeriod =  5.0/float_time; //approx 5 second recovery trigger period
     FusionAhrsSetSettings(&ahrs, ahrs_settings);
 
     ESP_LOGI(TAG, "AHRS Initialized");
@@ -329,7 +329,7 @@ esp_err_t init_spi_IMU(void){
     devcfg->duty_cycle_pos =    128;//50%/50% duty cycle
     devcfg->cs_ena_pretrans =   0;//CS timed with clock
     devcfg->cs_ena_posttrans =  0;
-    devcfg->clock_speed_hz=     10*1000*1000; //10Mhz
+    devcfg->clock_speed_hz=     9*1000*1000; //10Mhz
     devcfg->input_delay_ns =    0;
     devcfg->spics_io_num=       IMU_PIN_NUM_CS;
     devcfg->flags =             SPI_DEVICE_NO_DUMMY; //disable high freq(>100MHZ) workaround
@@ -585,29 +585,29 @@ esp_err_t DAC_find_offset(ltc2664_DACS_t dac){
     int32_t signed_offset = 0;
     ltc2664_save_offset(dac, &signed_offset);
 
-    uint16_t input = UINT16_MAX/2;
+    uint16_t input = 32625;//UINT16_MAX/2;
     uint16_t adjuster = input/64;
     //initialize the dac to midscale
     ret = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, dac, &input);
     if(ret != ESP_OK) return ret;
-    //assign mux to match selected dac, mapping described in "ORC Documentation.pdf"
-    uint8_t mux[4] = {0,3,2,1};
+    // //assign mux to match selected dac, mapping described in "ORC Documentation.pdf"
+    // uint8_t mux[4] = {0,3,2,1};
 
-    gpio_set_level(MUX_PIN_A0, mux[dac] & 0x0001);
-    gpio_set_level(MUX_PIN_A1, (mux[dac] & 0x0002) >> 1);
-    //narrow the adjuster while moving the input value up or down according to the comparator input
-    while(adjuster > 2){
-        vTaskDelay(15); //allow the DAC, Comparator, and amplifier to settle
-        if(gpio_get_level(COMPARATOR_PIN)){ //comparator determines if output A is greater than B for the given channel
-            input -= adjuster;  //and adjust the offset value approprietly
-        }
-        else{
-            input += adjuster;
-        }
-        ret = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, dac, &input); //see if the new offset is correct
-        if(ret != ESP_OK) return ret;
-        adjuster = adjuster/2;
-    }
+    // gpio_set_level(MUX_PIN_A0, mux[dac] & 0x0001);
+    // gpio_set_level(MUX_PIN_A1, (mux[dac] & 0x0002) >> 1);
+    // //narrow the adjuster while moving the input value up or down according to the comparator input
+    // while(adjuster > 2){
+    //     vTaskDelay(15); //allow the DAC, Comparator, and amplifier to settle
+    //     if(gpio_get_level(COMPARATOR_PIN)){ //comparator determines if output A is greater than B for the given channel
+    //         input -= adjuster;  //and adjust the offset value approprietly
+    //     }
+    //     else{
+    //         input += adjuster;
+    //     }
+    //     ret = ltc2664_write_and_update_1_dac(&LTC2664_dev_ctx, dac, &input); //see if the new offset is correct
+    //     if(ret != ESP_OK) return ret;
+    //     adjuster = adjuster/2;
+    // }
     signed_offset = input-(UINT16_MAX/2);
     //save that offset to be used in DAC writing function;
     ltc2664_save_offset(dac, &signed_offset);
@@ -678,12 +678,17 @@ void app_main(void){
     gpio_config(&io_conf);
     /* Configure Mode Switches Pin */
     io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.pin_bit_mask = GPIO_MODE_SWS;
+    io_conf.pin_bit_mask = GPIO_MODE_SWS_HIGH;
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_down_en = 0;
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
-
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.pin_bit_mask = GPIO_MODE_SWS_LOW;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_down_en = 1;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
     /* Read boot config switches, write global bools */
     if(gpio_get_level(MODE_SW_EN_LOGGING) == 1){
         ESP_LOGI(TAG,"Logging Enabled");
@@ -859,11 +864,6 @@ void app_main(void){
             }
         }
     }//logging enabled if statement
-    // else{//logging disabled, do nothing on this core
-    //     while(1){
-    //             vTaskDelay(1000); //just continue yeilding, as this task can't be ended without causing upset
-    //     } 
-    // }
     return;
 }
 

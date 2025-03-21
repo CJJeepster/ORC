@@ -48,24 +48,25 @@
 #define MODE_SW_EN_ACTUATOR 35  //enable actuators
 #define MODE_SW_START_LOG   36  //start and stop log via this switch
 #define MODE_SW_APPEND_LOG  39  //choose to start new log (same file) or append to previous after pause
-#define GPIO_MODE_SWS       ((1ULL<<MODE_SW_EN_ACTUATOR) | (1ULL<<MODE_SW_EN_LOGGING) | (1ULL<<MODE_SW_APPEND_LOG) | (1ULL<<MODE_SW_START_LOG))
+#define GPIO_MODE_SWS_HIGH  ((1ULL<<MODE_SW_EN_ACTUATOR) | (1ULL<<MODE_SW_EN_LOGGING) | (1ULL<<MODE_SW_APPEND_LOG))
+#define GPIO_MODE_SWS_LOW   (1ULL<<MODE_SW_START_LOG)
 /* nonlinear filter constants */
 #define IMU_XL_PEAK_REJ     30738 //eq to 3.75g in int16 output data format, reject xl values above this limit (below for negative)
 #define IMU_GY_PEAK_REJ     28572 //eq to 500dps in int16 output data format, reject gy values above this limit (below for negative)
-#define IMU_NOISE_FLOOR     0.02f //crush all xl data +- this value to zero
+#define IMU_NOISE_FLOOR     0.003f //crush all xl data +- this value to zero
 /* distances */
 #define FA_COG      0.011    //distance to front axle linkages (in meters) from COG
 #define RA_COG      0.018    //distance to rear axle linkages (in meters) from COG
 #define DA_COG      0.008    //distance to drive side linkages (in meters) from COG
 #define PA_COG      0.008    //distance to passenger side linkages (in meters) from COG
 /* PID constants */
-#define Z_XL_KP     -40000.0f
+#define Z_XL_KP     -30000.0f
 #define Z_XL_KI     -0.0f    //integral can be unstable, without providing much to response, possible value: -8000
-#define Z_XL_KD     -2500.0f
+#define Z_XL_KD     -1800.0f
 #define PITCH_KP    -70.0f
 #define PITCH_KI    -1.50f
 #define PITCH_KD    -1.0f
-#define ROLL_KP     -70.0f
+#define ROLL_KP     -50.0f
 #define ROLL_KI     -1.50f
 #define ROLL_KD     -1.0f
 
