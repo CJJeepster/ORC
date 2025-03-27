@@ -100,7 +100,7 @@ def plot_data(logs, data_key, title, filename,stats=False,derivative=False):
             rms_vals.append(rms)
             min_vals.append(min_val)
             max_vals.append(max_val)
-            if(first_3_count == 10): #plot only the 11th sample
+            if(first_3_count ==2): #plot only the 11th sample
                 ax.plot(data["Time [s]"][time_index], filtered_data, label=key, linestyle = "-", linewidth = 5.0)
             first_3_count += 1
             time_index += 1
@@ -134,12 +134,12 @@ def plot_data(logs, data_key, title, filename,stats=False,derivative=False):
     plt.close()
 
 # Generate separate plots
-plot_data(logs, "Acceleration [g]", "Single Sample - Median Filtered (ks=15) Acceleration Data", "acceleration_corner.png")
-plot_data(logs, "Pitch [°]", "Single Sample - Median Filtered (ks=15) Pitch Data", "pitch_corner.png")
-plot_data(logs, "Roll [°]", "Single Sample - Median Filtered (ks=15) Roll Data", "roll_corner.png")
-plot_data(logs, "Acceleration [g]", "Single Sample - Median Filtered (ks=15) Computed Jerk", "jerk_corner.png", derivative=True)
-plot_data(logs, "Acceleration [g]", "Single Sample - Median Filtered (ks=15) Acceleration Data", "acceleration_corner_stats.png",stats=True)
-plot_data(logs, "Pitch [°]", "Single Sample - Median Filtered (ks=15) Pitch Data", "pitch_corner_stats.png",stats=True)
-plot_data(logs, "Roll [°]", "Single Sample - Median Filtered (ks=15) Roll Data", "roll_corner_stats.png",stats=True)
-plot_data(logs, "Acceleration [g]", "Single Sample - Median Filtered (ks=15) Computed Jerk", "jerk_corner_stats.png", derivative=True, stats=True)
-print("Plots saved as 4K images with statistics.")
+plot_data(logs, "Acceleration [g]", "Corner Test Single Sample - Median Filtered (ks=15) Acceleration Data", "acceleration_Corner.png")
+plot_data(logs, "Pitch [°]", "Corner Test Single Sample - Median Filtered (ks=15) Pitch Data", "pitch_Corner.png")
+plot_data(logs, "Roll [°]", "Corner Test Single Sample - Median Filtered (ks=15) Roll Data", "roll_Corner.png")
+plot_data(logs, "Acceleration [g]", "Corner Test Single Sample - Median Filtered (ks=15) Computed Jerk", "jerk_Corner.png", derivative=True)
+plot_data(logs, "Acceleration [g]", "Corner Test Single Sample - Median Filtered (ks=15) Acceleration Data", "acceleration_Corner_stats.png",stats=True)
+plot_data(logs, "Pitch [°]", "Corner Test Single Sample - Median Filtered (ks=15) Pitch Data", "pitch_Corner_stats.png",stats=True)
+plot_data(logs, "Roll [°]", "Corner Test Single Sample - Median Filtered (ks=15) Roll Data", "roll_Corner_stats.png",stats=True)
+plot_data(logs, "Acceleration [g]", "Corner Test Single Sample - Median Filtered (ks=15) Computed Jerk", "jerk_Corner_stats.png", derivative=True, stats=True)
+print("Plots saved.")
