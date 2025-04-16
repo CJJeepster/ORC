@@ -1,3 +1,5 @@
+#CSV data plotting and stats analysis program for ORC
+
 import matplotlib.pyplot as plt
 import csv
 import numpy as np
